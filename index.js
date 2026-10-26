@@ -1,6 +1,7 @@
 // hello. feel free to look.
 const fs = require('fs');
 const path = require('path');
+const http = require('node:http');
 const { MongoClient } = require('mongodb');
 const {
   Client,
@@ -103,6 +104,7 @@ if (!clientId) {
 }
 let mongoClient;
 let db;
+let botReady = false;
 let usersCollection;
 let cooldownsCollection;
 let eventSystemCollection;
@@ -2374,6 +2376,9 @@ client.once('clientReady', async () => {
   } catch (err) { 
     console.error('Error registering commands:', err); 
   }
+
+  botReady = true;
+  console.log('Bot startup completed; health check ready.');
 });
 
 client.on('interactionCreate', async interaction => {
@@ -10883,5 +10888,26 @@ async function handleEndRaidCommand(interaction) {
   }
   console.log(`Raid Season ${season.seasonId} ended. ${results.length} player(s) settled.`);
 }
+
+const port = Number(process.env.PORT) || 8080;
+http.createServer((req, res) => {
+  if (req.url === '/health') {
+    const ready = botReady && Boolean(db) && client.isReady();
+    res.writeHead(ready ? 200 : 503, { 'content-type': 'text/plain; charset=utf-8' });
+    res.end(ready ? 'ok\n' : 'starting\n');
+    return;
+  }
+
+  if (req.url === '/') {
+    res.writeHead(200, { 'content-type': 'text/plain; charset=utf-8' });
+    res.end('Fortune Bot is running\n');
+    return;
+  }
+
+  res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' });
+  res.end('Not found\n');
+}).listen(port, '0.0.0.0', () => {
+  console.log(`HTTP health server listening on port ${port}`);
+});
 
 client.login(token);[]
