@@ -31,7 +31,7 @@ function isDeveloper(userId) {
 
 
 const HARDCODED_BLACKLISTED_SERVERS = new Set([
-  '1029577794935595048'
+  '1349545267468177429'
 ]);
 
 async function isServerBlacklisted(guildId) {
