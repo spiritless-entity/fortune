@@ -36,10 +36,11 @@ const HARDCODED_BLACKLISTED_SERVERS = new Set([
 
 async function isServerBlacklisted(guildId) {
   if (!guildId) return false;
-  if (HARDCODED_BLACKLISTED_SERVERS.has(guildId)) return true;
-  if (!serverBlacklistCollection) return false;
-  const doc = await serverBlacklistCollection.findOne({ _id: guildId });
-  return !!(doc && doc.blacklisted);
+  if (serverBlacklistCollection) {
+    const doc = await serverBlacklistCollection.findOne({ _id: guildId });
+    if (doc && typeof doc.blacklisted === 'boolean') return doc.blacklisted;
+  }
+  return HARDCODED_BLACKLISTED_SERVERS.has(guildId);
 }
 
 async function setServerBlacklist(guildId, blacklisted) {
