@@ -4,6 +4,12 @@ const path = require('path');
 const http = require('node:http');
 const { MongoClient } = require('mongodb');
 const {
+  SHARD_MONTHLY_CAP,
+  SHARD_OVERFLOW_CASH,
+  ARTEFACT_FORGE_SHARD_COSTS,
+  createArtefactHelpers
+} = require('./artefact-progression');
+const {
   Client,
   GatewayIntentBits,
   REST,
@@ -976,12 +982,32 @@ async function saveUserData() {
 }
 
 const rarities = [
-  { name:'1-Star', chance:65, color:0xAAAAAA, value:100,   sell:150,   stars:1, items:['Quartz','Mica','Olivine','Condensed Quartz','Calcite Crystal','Feldspar','Flint Chip','Shale Flake','Agate Cluster','Basalt Prism','Diorite Slab','Lignite Chip','Travertine Fragment','Smoky Quartz','Sandstone Carving','Pumice Dome'] },
-  { name:'2-Star', chance:20, color:0x00FF00, value:500,   sell:500,   stars:2, items:['Garnet','Talc','Magnetite','Lithium Battery','Hornblende','Limestone Tablet','Serpentine','Ring of Malachite','Jade Scarab','Dolomite Tablet','Augite Crystal','Stibnite Wand','Chalcopyrite','Crown of Gypsum','Rhodochrosite'] },
-  { name:'3-Star', chance:10, color:0x00008B, value:1500,  sell:1500,  stars:3, items:['Eye of Monazite','Chest of Xenotime','Euxenite','Beryl','Loparite','Amber Fossil','Obsidian Blade','Scepter of Rhodonite','Turquoise Idol','Spectrolite Lens','Vanadinite Cluster','Wulfenite Plate','Brazilianite Shard','Mask of Dioptase','Alexandrite Prism'] },
-  { name:'4-Star', chance:4,  color:0xFFD700, value:4000,  sell:4000,  stars:4, items:['Watch of Scandium','Statue of Bastnasite','Allanite','Fluorite Shard','Ixiolite','Lapis Lazuli','Nephrite Goblet','Citrine Crest','Staff of Chrysoberyl','Relic of Moissanite','Orb of Tanzanite','Spessartine Dagger','Demantoid Shard','Crown of Benitoite','Throne of Jadeite','Taaffeite Pendant'] },
-  { name:'5-Star', chance:1,  color:0x000000, value:10000, sell:10000, stars:5, items:['Gem of Diamond','Kyawthuite','Hazenite Droplet','Ephemeral Allanite','Meteorite Shard','Coesite Fragment','Painite Crystal','Scepter of Onyx','Primordial Opal','Musgravite Fragment','Pezzottaite Core','Void Calcite','Serendibite Relic','Grandidierite Prism','Stellar Obsidian'] }
+  { name:'1-Star', chance:64.2, color:0xAAAAAA, value:150,  sell:150,  stars:1, items:['Quartz','Mica','Olivine','Condensed Quartz','Calcite Crystal','Feldspar','Flint Chip','Shale Flake','Agate Cluster','Basalt Prism','Diorite Slab','Lignite Chip','Travertine Fragment','Smoky Quartz','Sandstone Carving','Pumice Dome'] },
+  { name:'2-Star', chance:20,   color:0x00FF00, value:360,  sell:360,  stars:2, items:['Garnet','Talc','Magnetite','Lithium Battery','Hornblende','Limestone Tablet','Serpentine','Ring of Malachite','Jade Scarab','Dolomite Tablet','Augite Crystal','Stibnite Wand','Chalcopyrite','Crown of Gypsum','Rhodochrosite'] },
+  { name:'3-Star', chance:10,   color:0x00008B, value:960,  sell:960,  stars:3, items:['Eye of Monazite','Chest of Xenotime','Euxenite','Beryl','Loparite','Amber Fossil','Obsidian Blade','Scepter of Rhodonite','Turquoise Idol','Spectrolite Lens','Vanadinite Cluster','Wulfenite Plate','Brazilianite Shard','Mask of Dioptase','Alexandrite Prism'] },
+  { name:'4-Star', chance:4,    color:0xFFD700, value:2160, sell:2160, stars:4, items:['Watch of Scandium','Statue of Bastnasite','Allanite','Fluorite Shard','Ixiolite','Lapis Lazuli','Nephrite Goblet','Citrine Crest','Staff of Chrysoberyl','Relic of Moissanite','Orb of Tanzanite','Spessartine Dagger','Demantoid Shard','Crown of Benitoite','Throne of Jadeite','Taaffeite Pendant'] },
+  { name:'5-Star', chance:1,    color:0x000000, value:4200, sell:4200, stars:5, items:['Gem of Diamond','Kyawthuite','Hazenite Droplet','Ephemeral Allanite','Meteorite Shard','Coesite Fragment','Painite Crystal','Scepter of Onyx','Primordial Opal','Musgravite Fragment','Pezzottaite Core','Void Calcite','Serendibite Relic','Grandidierite Prism','Stellar Obsidian'] }
 ];
+
+const allBaseArtefacts = [...new Set(rarities.flatMap(rarity => rarity.items))];
+rarities.push(
+  { name:'6-Star', chance:0.50, color:0x00CFFF, value:5400, sell:5400, stars:6, items:allBaseArtefacts },
+  { name:'7-Star', chance:0.20, color:0xFF4DFF, value:6600, sell:6600, stars:7, items:allBaseArtefacts },
+  { name:'8-Star', chance:0.08, color:0x9B59B6, value:7800, sell:7800, stars:8, items:allBaseArtefacts },
+  { name:'9-Star', chance:0.02, color:0xE74C3C, value:9000, sell:9000, stars:9, items:allBaseArtefacts }
+);
+
+const {
+  parseArtefactName,
+  makeArtefactName,
+  getArtefactBaseName,
+  getArtefactStarLevel,
+  isShinyArtefact,
+  getRarityByArtefactName,
+  getCollectionKey,
+  ensureShardLedger,
+  awardArtifactShards
+} = createArtefactHelpers(rarities);
 
 const artefactTiers = {
   'Quartz': 2, 'Mica': 2, 'Olivine': 2,
@@ -1025,35 +1051,32 @@ const artefactTiers = {
 const TIER_MULTIPLIERS = { 1: 0.65, 2: 0.75, 3: 1.0, 4: 1.25, 5: 1.35 };
 
 function getArtefactTier(name) {
-  const cleanName = name.startsWith('✨ SHINY ') && name.endsWith(' ✨')
-    ? name.replace('✨ SHINY ', '').replace(' ✨', '')
-    : name;
-  return artefactTiers[cleanName] || 2;
+  return artefactTiers[getArtefactBaseName(name)] || 2;
 }
 
 function calcArtefactSellValue(name, rarity) {
   const tier = getArtefactTier(name);
-  const base = rarity ? rarity.sell : 100;
+  const itemRarity = getRarityByArtefact(name) || rarity;
+  const base = itemRarity ? itemRarity.sell : 100;
   const mult = getMarketMultiplier(name);
   return Math.floor(base * TIER_MULTIPLIERS[tier] * mult);
 }
 
 function calcArtefactTradeValue(name, rarity) {
-  const isShiny = name.startsWith('✨ SHINY ') && name.endsWith(' ✨');
   const base = calcArtefactSellValue(name, rarity);
-  return isShiny ? base * 5 : base;
+  return isShinyArtefact(name) ? base * 5 : base;
 }
 
 function calcArtefactValue(name, rarity) {
   const tier = getArtefactTier(name);
-  const base = rarity ? rarity.value : 100;
+  const itemRarity = getRarityByArtefact(name) || rarity;
+  const base = itemRarity ? itemRarity.value : 100;
   const mult = getMarketMultiplier(name);
   return Math.floor(base * TIER_MULTIPLIERS[tier] * mult);
 }
 
 function getRarityByArtefact(name) {
-  const cleanName = name.startsWith('✨ SHINY ') && name.endsWith(' ✨') ? name.replace('✨ SHINY ', '').replace(' ✨', '') : name;
-  return rarities.find(r => r.items.includes(cleanName));
+  return getRarityByArtefactName(name);
 }
 
 const MARKET_REFRESH_INTERVAL = 6 * 60 * 60 * 1000; // 6 hours
@@ -1065,7 +1088,11 @@ const MARKET_VOLATILITY = {
   '2-Star': { stay: 0.80, swing: 0.05 },
   '3-Star': { stay: 0.70, swing: 0.10 },
   '4-Star': { stay: 0.50, swing: 0.12 },
-  '5-Star': { stay: 0.40, swing: 0.15 }
+  '5-Star': { stay: 0.40, swing: 0.15 },
+  '6-Star': { stay: 0.35, swing: 0.18 },
+  '7-Star': { stay: 0.30, swing: 0.20 },
+  '8-Star': { stay: 0.25, swing: 0.22 },
+  '9-Star': { stay: 0.20, swing: 0.25 }
 };
 
 const MARKET_CACHE = {
@@ -1076,17 +1103,24 @@ const MARKET_CACHE = {
 };
 
 function getMarketMultiplier(name) {
-  const cleanName = name.startsWith('✨ SHINY ') && name.endsWith(' ✨')
-    ? name.replace('✨ SHINY ', '').replace(' ✨', '')
-    : name;
-  const m = MARKET_CACHE.multipliers[cleanName];
+  const cleanName = getArtefactBaseName(name);
+  const stars = getArtefactStarLevel(name);
+  const marketKey = stars > 5 ? `${cleanName}::${stars}-Star` : cleanName;
+  const m = MARKET_CACHE.multipliers[marketKey];
   return (typeof m === 'number' && m > 0) ? m : 1.0;
 }
 
 function getAllArtefactNames() {
-  const names = [];
-  for (const r of rarities) for (const item of r.items) names.push(item);
-  return names;
+  return [...new Set(rarities.flatMap(rarity => rarity.items))];
+}
+
+function getAllMarketKeys() {
+  return [...new Set(rarities.flatMap(rarity =>
+    rarity.items.map(item => {
+      const variant = makeArtefactName(item, rarity.stars);
+      return rarity.stars > 5 ? `${item}::${rarity.stars}-Star` : variant;
+    })
+  ))];
 }
 
 function rollNewMultiplier(currentMult, rarityName) {
@@ -1102,7 +1136,7 @@ async function loadMarketState() {
   let doc = await marketStateCollection.findOne({ _id: 'global' });
   if (!doc) {
     const seed = {};
-    for (const name of getAllArtefactNames()) seed[name] = 1.0;
+    for (const name of getAllMarketKeys()) seed[name] = 1.0;
     doc = {
       _id: 'global',
       multipliers: seed,
@@ -1121,7 +1155,7 @@ async function loadMarketState() {
   MARKET_CACHE.crashoutHistory = Array.isArray(doc.crashoutHistory) ? doc.crashoutHistory : [];
 
   let added = false;
-  for (const name of getAllArtefactNames()) {
+  for (const name of getAllMarketKeys()) {
     if (typeof MARKET_CACHE.multipliers[name] !== 'number') {
       MARKET_CACHE.multipliers[name] = 1.0;
       added = true;
@@ -1141,8 +1175,9 @@ async function runMarketRefresh() {
   const newMultipliers = {};
   for (const r of rarities) {
     for (const item of r.items) {
-      const current = MARKET_CACHE.multipliers[item] ?? 1.0;
-      newMultipliers[item] = Number(rollNewMultiplier(current, r.name).toFixed(4));
+      const key = r.stars > 5 ? `${item}::${r.stars}-Star` : item;
+      const current = MARKET_CACHE.multipliers[key] ?? 1.0;
+      newMultipliers[key] = Number(rollNewMultiplier(current, r.name).toFixed(4));
     }
   }
   MARKET_CACHE.multipliers = newMultipliers;
@@ -1207,6 +1242,8 @@ const QUEST_SECTION_BONUS_CASH = 300;
 const QUEST_SECTION_BONUS_XP = 5;
 const QUEST_FULL_CLEAR_BONUS_CASH = 1000;
 const QUEST_FULL_CLEAR_BONUS_XP = 20;
+const WEEKLY_FULL_CLEAR_SHARD_REWARD = 1;
+const COMMUNITY_QUEST_SHARD_REWARD = 2;
 
 const DAILY_QUEST_ACTION_POOL = [
   { id: 'act_scavenge3', section: 'action', track: 'scavenge', target: 3, label: 'Scavenge 3 Times', desc: 'Use /scavenge 3 times.', cashReward: 300, xpReward: 5 },
@@ -1324,7 +1361,7 @@ async function announceNewCommunityQuest(guildId, community) {
       .setDescription(`This week's community goal: **${community.label}**\n${community.desc}`)
       .addFields(
         { name: 'Target', value: `${community.target.toLocaleString()}`, inline: true },
-        { name: 'Reward (per contributor)', value: `$${community.cashReward.toLocaleString()} + ${community.xpReward} XP`, inline: true }
+        { name: 'Reward (per eligible claimant)', value: `$${community.cashReward.toLocaleString()} + ${community.xpReward} XP + ${COMMUNITY_QUEST_SHARD_REWARD} shards`, inline: true }
       )
       .setColor(0x3498DB)
       .setFooter({ text: 'Everyone who contributes can claim a reward once the goal is reached. Resets weekly!' })
@@ -1367,7 +1404,7 @@ async function announceCommunityQuestComplete(guildId, community) {
       .setDescription(`The server has completed this week's community goal: **${community.label}**!\n${community.desc}\n\nContributors can claim their reward below.`)
       .addFields(
         { name: 'Contributors', value: `${community.contributors.length} player(s)`, inline: true },
-        { name: 'Reward (each)', value: `$${community.cashReward.toLocaleString()} + ${community.xpReward} XP`, inline: true }
+        { name: 'Reward (each eligible claimant)', value: `$${community.cashReward.toLocaleString()} + ${community.xpReward} XP + ${COMMUNITY_QUEST_SHARD_REWARD} shards`, inline: true }
       )
       .setColor(0x1ABC9C)
       .setFooter({ text: 'A new community quest will appear next week!' })
@@ -1461,9 +1498,10 @@ async function runCrashout() {
 
   const updated = { ...MARKET_CACHE.multipliers };
   for (const item of rarity.items) {
-    const current = updated[item] ?? 1.0;
+    const key = rarity.stars > 5 ? `${item}::${rarity.stars}-Star` : item;
+    const current = updated[key] ?? 1.0;
     const next = Math.min(MARKET_MULT_CEILING, Math.max(MARKET_MULT_FLOOR, current * factor));
-    updated[item] = Number(next.toFixed(4));
+    updated[key] = Number(next.toFixed(4));
   }
   MARKET_CACHE.multipliers = updated;
   MARKET_CACHE.lastCrashout = Date.now();
@@ -1575,9 +1613,7 @@ for (const [setId, set] of Object.entries(ARTEFACT_SETS)) {
 }
 
 function stripShinyName(name) {
-  return (name.startsWith('✨ SHINY ') && name.endsWith(' ✨'))
-    ? name.replace('✨ SHINY ', '').replace(' ✨', '')
-    : name;
+  return getArtefactBaseName(name);
 }
 
 function getSetIdForItem(name) {
@@ -1649,7 +1685,7 @@ function computeSetProgress(playerArtefacts) {
 
 
 function getAllArtefacts() {
-  return rarities.flatMap(rarity => rarity.items);
+  return [...new Set(rarities.flatMap(rarity => rarity.items))];
 }
 
 async function checkAndHandleEvents() {
@@ -1993,6 +2029,15 @@ client.once('clientReady', async () => {
     new SlashCommandBuilder()
       .setName('mass-sell')
       .setDescription('Open an interactive menu to select and sell artefacts from your inventory'),
+
+    new SlashCommandBuilder()
+      .setName('forge')
+      .setDescription('Upgrade an artefact to its next Star level using shards')
+      .addStringOption(option =>
+        option.setName('artefact')
+          .setDescription('The artefact copy to upgrade')
+          .setRequired(true)
+          .setAutocomplete(true)),
 
     new SlashCommandBuilder()
       .setName('add-item')
@@ -2427,6 +2472,30 @@ client.on('interactionCreate', async interaction => {
       );
       return;
     }
+
+    if (commandName === 'forge' && focusedOption.name === 'artefact') {
+      const user = await getUser(interaction.user.id);
+      const query = String(focusedOption.value || '').toLowerCase();
+      const uniqueArtefacts = [...new Set(user.artefacts || [])];
+      const choices = uniqueArtefacts
+        .filter(name => {
+          const rarity = getRarityByArtefact(name);
+          return rarity && rarity.stars < 9 &&
+            (name.toLowerCase().includes(query) ||
+              getArtefactBaseName(name).toLowerCase().includes(query));
+        })
+        .slice(0, 25)
+        .map(name => {
+          const rarity = getRarityByArtefact(name);
+          const cost = ARTEFACT_FORGE_SHARD_COSTS[rarity.stars];
+          return {
+            name: `${name} (${rarity.name} → ${rarity.stars + 1}-Star, ${cost} shard${cost === 1 ? '' : 's'})`,
+            value: name
+          };
+        });
+      await interaction.respond(choices);
+      return;
+    }
   }
 
   if (interaction.isStringSelectMenu()) {
@@ -2774,6 +2843,9 @@ client.on('interactionCreate', async interaction => {
         break;
       case 'mass-sell':
         await handleMassSellCommand(interaction, userId);
+        break;
+      case 'forge':
+        await handleForgeCommand(interaction, userId);
         break;
       case 'add-item':
         await handleAddItemCommand(interaction);
@@ -3734,10 +3806,11 @@ async function handleMarketCommand(interaction) {
     const rows = [];
     for (const r of rarities) {
       for (const item of r.items) {
-        const cur = MARKET_CACHE.multipliers[item] ?? 1.0;
-        const prev = MARKET_CACHE.previousMultipliers[item] ?? cur;
+        const marketKey = r.stars > 5 ? `${item}::${r.stars}-Star` : item;
+        const cur = MARKET_CACHE.multipliers[marketKey] ?? 1.0;
+        const prev = MARKET_CACHE.previousMultipliers[marketKey] ?? cur;
         const changePct = prev > 0 ? ((cur - prev) / prev) * 100 : 0;
-        rows.push({ name: item, rarity: r.name, mult: cur, changePct });
+        rows.push({ name: makeArtefactName(item, r.stars), rarity: r.name, mult: cur, changePct });
       }
     }
 
@@ -3818,6 +3891,7 @@ async function handleInfoCommand(interaction) {
           '`/labor` — Work to earn cash (cooldown applies)',
           '`/inventory` — View your cash, bank balance, and artefact collection',
           '`/collection` — Browse your full field guide (now with a **Sets** page!)',
+          '`/quests` — Track daily quests, weekly shard rewards, and community quests',
           '`/convert` — Convert XP into cash (1 XP = $2)'
         ].join('\n'),
         inline: false
@@ -3836,6 +3910,7 @@ async function handleInfoCommand(interaction) {
         name: 'Trading & Selling',
         value: [
           '`/mass-sell` — Queue and sell many artefacts at once. **Sell a complete set together to earn the Collector\'s Premium (+20%)**.',
+          '`/forge` — Spend shards and an artefact copy to upgrade that same artefact to the next Star level',
           '`/trade <user>` — Start an interactive trade with another player',
           '`/store` — View global and server-specific items for sale',
           '`/buy <item>` — Purchase an item from the store'
@@ -3858,7 +3933,7 @@ async function handleInfoCommand(interaction) {
         name: 'The Market',
         value: [
           '`/market` — See current top gainers, top losers, biggest movers, and the next refresh countdown',
-          'Artefact prices **fluctuate every 6 hours**. Higher rarities swing harder — 1-Star rarely moves, 5-Star can swing up to ±15% per refresh.',
+          'Artefact prices **fluctuate every 6 hours**. Higher rarities swing harder — 1-Star rarely moves, 9-Star can swing up to ±25% per refresh.',
           'Every price you see (in inventory, sell, collection, scavenge results) reflects the live market — buy low, sell high.'
         ].join('\n'),
         inline: false
@@ -3868,7 +3943,7 @@ async function handleInfoCommand(interaction) {
         value: [
           'There are **8 curated sets** spanning multiple rarities (e.g. The Volcanic Set, The Royal Regalia Set, The Stellar Set).',
           'Selling a **complete set** in a single `/mass-sell` transaction grants a **+20% Collector\'s Premium** on those items\' value.',
-          'Check your progress on the new **Sets** page (page 6) of `/collection`. Trade aggressively for that one missing piece — it\'s often worth overpaying.'
+          'Check your progress on the **Sets** page (page 10) of `/collection`. Trade aggressively for that one missing piece — it\'s often worth overpaying.'
         ].join('\n'),
         inline: false
       },
@@ -3894,9 +3969,19 @@ async function handleInfoCommand(interaction) {
       {
         name: 'Artefact Rarity & Tier Scaling',
         value: [
-          '**⭐ 1-Star** (65%) · **⭐⭐ 2-Star** (20%) · **⭐⭐⭐ 3-Star** (10%) · **⭐⭐⭐⭐ 4-Star** (4%) · **⭐⭐⭐⭐⭐ 5-Star** (1%)',
+          '**⭐ 1-Star** (64.2%) · **⭐⭐ 2-Star** (20%) · **⭐⭐⭐ 3-Star** (10%) · **⭐⭐⭐⭐ 4-Star** (4%) · **⭐⭐⭐⭐⭐ 5-Star** (1%) · **⭐⭐⭐⭐⭐⭐ 6-Star** (0.50%) · **⭐⭐⭐⭐⭐⭐⭐ 7-Star** (0.20%) · **⭐⭐⭐⭐⭐⭐⭐⭐ 8-Star** (0.08%) · **⭐⭐⭐⭐⭐⭐⭐⭐⭐ 9-Star** (0.02%)',
           'Each artefact has a tier (T1–T5) that scales its sell value: T1=65%  T2=75%  T3=100%  T4=125%  T5=135%.',
           'Shiny variants (✨) sell for 5× the base tier value — and they count toward set completion.'
+        ].join('\n'),
+        inline: false
+      },
+      {
+        name: 'Shards & Forging',
+        value: [
+          'Each eligible weekly community-quest claimant gets **2 shards**. The first full personal-quest clear each week gives **1 shard**.',
+          'Players can earn up to **5 shards per UTC month** across all servers. Unspent shards carry over; overflow rewards become **$500 per shard**.',
+          'Use `/forge` to consume one copy of an artefact and shards, upgrading the **same artefact** by one Star level.',
+          'Upgrade costs: **1→2: 1**, **2→3: 1**, **3→4: 2**, **4→5: 2**, **5→6: 3**, **6→7: 3**, **7→8: 4**, **8→9: 5 shards**.'
         ].join('\n'),
         inline: false
       }
@@ -4206,6 +4291,69 @@ async function handleStealCommand(interaction, userId) {
   }
 }
 
+async function handleForgeCommand(interaction, userId) {
+  const user = await getUser(userId);
+  const selectedName = interaction.options.getString('artefact', true);
+  const inventory = user.artefacts || [];
+  const artefactIndex = inventory.indexOf(selectedName);
+
+  if (artefactIndex < 0) {
+    return await interaction.reply({
+      content: 'That artefact is no longer in your inventory. Run `/forge` again and choose an owned copy.',
+      ephemeral: true
+    });
+  }
+
+  const { baseName, stars, isShiny } = parseArtefactName(selectedName);
+  const rarity = getRarityByArtefact(selectedName);
+  if (!rarity || !stars) {
+    return await interaction.reply({
+      content: 'I could not identify that artefact\'s Star level. Please choose an artefact from the `/forge` suggestions.',
+      ephemeral: true
+    });
+  }
+  if (stars >= 9) {
+    return await interaction.reply({
+      content: 'That artefact is already at the highest Star level.',
+      ephemeral: true
+    });
+  }
+
+  const shardCost = ARTEFACT_FORGE_SHARD_COSTS[stars];
+  const shardLedger = ensureShardLedger(user);
+  if (shardLedger.balance < shardCost) {
+    return await interaction.reply({
+      content: `Forging **${selectedName}** into ${getRarityEmoji(`${stars + 1}-Star`)} costs **${shardCost} shard${shardCost === 1 ? '' : 's'}**. You have **${shardLedger.balance}**.`,
+      ephemeral: true
+    });
+  }
+
+  const upgradedName = makeArtefactName(baseName, stars + 1, isShiny);
+  const upgradedCollectionKey = makeArtefactName(baseName, stars + 1);
+  inventory.splice(artefactIndex, 1);
+  inventory.push(upgradedName);
+  shardLedger.balance -= shardCost;
+  if (!user.discoveredArtefacts) user.discoveredArtefacts = [];
+  if (!user.discoveredArtefacts.includes(upgradedCollectionKey)) {
+    user.discoveredArtefacts.push(upgradedCollectionKey);
+  }
+  await saveUser(userId);
+
+  const upgradedRarity = getRarityByArtefact(upgradedName);
+  const embed = new EmbedBuilder()
+    .setTitle('Artefact Forged')
+    .setDescription(`Your **${selectedName}** became **${upgradedName}**. It is still the same artefact, now at a higher Star level.`)
+    .addFields(
+      { name: 'New Rarity', value: `${getRarityEmoji(upgradedRarity.name)} ${upgradedRarity.name}`, inline: true },
+      { name: 'Shards Used', value: `${shardCost}`, inline: true },
+      { name: 'Shards Remaining', value: `${shardLedger.balance}`, inline: true }
+    )
+    .setColor(upgradedRarity.color)
+    .setTimestamp();
+
+  await interaction.reply({ embeds: [embed], ephemeral: true });
+}
+
 async function handleScavengeCommand(interaction, userId) {
   await interaction.deferReply();
   const now = Date.now();
@@ -4253,12 +4401,13 @@ async function handleScavengeCommand(interaction, userId) {
   const artefact = selectedRarity.items[Math.floor(Math.random() * selectedRarity.items.length)];
 
   const isShiny = Math.random() < 0.005;
-  const finalArtefactName = isShiny ? `✨ SHINY ${artefact} ✨` : artefact;
+  const finalArtefactName = makeArtefactName(artefact, selectedRarity.stars, isShiny);
+  const collectionKey = makeArtefactName(artefact, selectedRarity.stars);
 
   userData[userId].artefacts.push(finalArtefactName);
   if (!userData[userId].discoveredArtefacts) userData[userId].discoveredArtefacts = [];
-  if (!userData[userId].discoveredArtefacts.includes(artefact)) {
-    userData[userId].discoveredArtefacts.push(artefact);
+  if (!userData[userId].discoveredArtefacts.includes(collectionKey)) {
+    userData[userId].discoveredArtefacts.push(collectionKey);
   }
   cooldowns.scavenge[userId] = now;
 
@@ -4266,7 +4415,7 @@ async function handleScavengeCommand(interaction, userId) {
   await saveCooldowns();
 
   await updateQuestProgress(userId, interaction.guildId, 'scavenge', 1);
-  if (['3-Star', '4-Star', '5-Star'].includes(selectedRarity.name)) {
+  if (selectedRarity.stars >= 3) {
     await updateQuestProgress(userId, interaction.guildId, 'find3StarPlus', 1);
   }
   if (isShiny) {
@@ -4288,7 +4437,7 @@ async function handleScavengeCommand(interaction, userId) {
   const scavengeEmbed = new EmbedBuilder()
     .setTitle(isShiny ? '✨ SHINY ARTEFACT DISCOVERED! ✨' : (event && artefact === event.positiveArtefact ? '🌟 Enhanced Scavenge Complete!' : 'Scavenge Complete'))
     .setDescription(isShiny ? 
-      `Holy cow! You found a **SHINY ${artefact}**! This is incredibly rare and worth 20 times more!` :
+      `Holy cow! You found a **SHINY ${getArtefactBaseName(finalArtefactName)}**! This is incredibly rare and worth 5 times more!` :
       (event && artefact === event.positiveArtefact ? 
       'You discovered a valuable artefact in the expanded mine sector!' : 
       'You discovered a valuable artefact during your search!'))
@@ -4378,35 +4527,20 @@ async function handleLaborCommand(interaction, userId) {
 }
 
 
-const INVENTORY_PAGE_SIZE = 12;
+const INVENTORY_PAGE_SIZE = 10;
 
 function getRarityEmoji(rarityName) {
-  switch (rarityName) {
-    case '1-Star': return '⭐';
-    case '2-Star': return '⭐⭐';
-    case '3-Star': return '⭐⭐⭐';
-    case '4-Star': return '⭐⭐⭐⭐';
-    case '5-Star': return '⭐⭐⭐⭐⭐';
-    default:       return '❓';
-  }
+  const stars = Number(String(rarityName || '').match(/^(\d+)-Star$/)?.[1]);
+  return stars >= 1 && stars <= 9 ? '⭐'.repeat(stars) : '❓';
 }
 
 function getArtefactRarityRank(name) {
-  if (name.startsWith('✨ SHINY ') && name.endsWith(' ✨')) return 0;
+  if (isShinyArtefact(name)) return 0;
   const rarity = getRarityByArtefact(name);
-  if (!rarity) return 5;
-  switch (rarity.name) {
-    case '4-Star': return 1;
-    case '3-Star': return 2;
-    case '2-Star': return 3;
-    case '1-Star': return 4;
-    default:       return 5;
-  }
+  return rarity ? 10 - rarity.stars : 11;
 }
 
 function buildInventoryPayload(user, userXpData, bankCapacity, page) {
-  const isShinyName = n => n.startsWith('✨ SHINY ') && n.endsWith(' ✨');
-
   const counts = {};
   for (const name of user.artefacts) counts[name] = (counts[name] || 0) + 1;
 
@@ -4428,7 +4562,7 @@ function buildInventoryPayload(user, userXpData, bankCapacity, page) {
     const count = counts[name];
     const rarity = getRarityByArtefact(name);
     const sell = calcArtefactSellValue(name, rarity);
-    const value = isShinyName(name) ? sell * 5 : sell;
+    const value = isShinyArtefact(name) ? sell * 5 : sell;
     const emoji = `${getRarityEmoji(rarity ? rarity.name : '')} `;
     lines.push(`**${count}x** ${emoji}${name} (~$${value.toLocaleString()})`);
   }
@@ -4440,8 +4574,10 @@ function buildInventoryPayload(user, userXpData, bankCapacity, page) {
   const totalValue = user.artefacts.reduce((sum, name) => {
     const rarity = getRarityByArtefact(name);
     const sell = calcArtefactSellValue(name, rarity);
-    return sum + (isShinyName(name) ? sell * 5 : sell);
+    return sum + (isShinyArtefact(name) ? sell * 5 : sell);
   }, 0);
+
+  const shardLedger = ensureShardLedger(user);
 
   const itemsCount = {};
   (user.items || []).forEach(item => { itemsCount[item] = (itemsCount[item] || 0) + 1; });
@@ -4465,12 +4601,13 @@ function buildInventoryPayload(user, userXpData, bankCapacity, page) {
       { name: 'Messages Sent',     value: userXpData.messageCount.toLocaleString(),                 inline: true },
       { name: 'Artefacts Owned',   value: user.artefacts.length.toString(),                         inline: true },
       { name: 'Collection Value',  value: `$${totalValue.toLocaleString()}`,                        inline: true },
+      { name: 'Artifact Shards',   value: `${shardLedger.balance} available · ${shardLedger.earnedThisMonth}/${SHARD_MONTHLY_CAP} earned this UTC month`, inline: true },
       { name: 'Bank Capacity',     value: `${(((user.bankBalance || 0) / bankCapacity) * 100).toFixed(1)}%`, inline: true },
       { name: collectionHeader,    value: artefactText || '\u200b',                                 inline: false },
       { name: 'Purchased Items',   value: itemsList,                                                inline: false }
     )
     .setColor(0x339AF0)
-    .setFooter({ text: `⭐ 1-Star  ⭐⭐ 2-Star  ⭐⭐⭐ 3-Star  ⭐⭐⭐⭐ 4-Star  ⭐⭐⭐⭐⭐ 5-Star  ✨ Shiny  •  /convert: 1 XP = $2` })
+    .setFooter({ text: `⭐ 1–9-Star artefacts · ✨ Shiny items sell for 5× · /forge upgrades with shards · /convert: 1 XP = $2` })
     .setTimestamp();
 
   const components = totalPages > 1 ? [
@@ -4914,7 +5051,7 @@ async function handleBuyCommand(interaction, userId) {
 
 
 function getMassSellValue(name) {
-  const isShiny = name.startsWith('✨ SHINY ') && name.endsWith(' ✨');
+  const isShiny = isShinyArtefact(name);
   const rarity = getRarityByArtefact(name);
   const tier = getArtefactTier(name);
   const tierSell = calcArtefactSellValue(name, rarity);
@@ -4923,9 +5060,7 @@ function getMassSellValue(name) {
 
 function massSellMatchesQuery(name, query) {
   if (!query) return true;
-  const clean = (name.startsWith('✨ SHINY ') && name.endsWith(' ✨'))
-    ? name.replace('✨ SHINY ', '').replace(' ✨', '')
-    : name;
+  const clean = getArtefactBaseName(name);
   const q = query.toLowerCase();
   return clean.toLowerCase().includes(q) || name.toLowerCase().includes(q);
 }
@@ -6024,21 +6159,53 @@ async function handleComponentInteraction(interaction) {
     if (!community.contributors.includes(claimerId)) {
       return await interaction.reply({ content: '❌ You did not contribute to this community quest.', ephemeral: true });
     }
-    if (community.claimedBy.includes(claimerId)) {
+    if ((community.claimedBy || []).includes(claimerId)) {
+      return await interaction.reply({ content: '✅ You already claimed this reward.', ephemeral: true });
+    }
+
+    const atomicClaim = await guildSettingsCollection.updateOne(
+      {
+        _id: guildId,
+        'communityQuest.weekKey': community.weekKey,
+        'communityQuest.completed': true,
+        'communityQuest.contributors': claimerId,
+        'communityQuest.claimedBy': { $ne: claimerId }
+      },
+      { $addToSet: { 'communityQuest.claimedBy': claimerId } }
+    );
+    if (!atomicClaim.matchedCount) {
       return await interaction.reply({ content: '✅ You already claimed this reward.', ephemeral: true });
     }
 
     const claimerUser = await getUser(claimerId);
+    const previousCash = claimerUser.cash;
+    const previousXp = claimerUser.xpData?.xp;
+    const previousLedger = claimerUser.artifactShardLedger
+      ? { ...claimerUser.artifactShardLedger }
+      : null;
     claimerUser.cash += community.cashReward;
     if (!claimerUser.xpData) claimerUser.xpData = { xp: 0, messageCount: 0, lastMessage: 0 };
     claimerUser.xpData.xp += community.xpReward;
-    await saveUser(claimerId);
-
-    community.claimedBy.push(claimerId);
-    await guildSettingsCollection.updateOne({ _id: guildId }, { $set: { communityQuest: community } });
+    const shardReward = awardArtifactShards(claimerUser, COMMUNITY_QUEST_SHARD_REWARD);
+    try {
+      await saveUser(claimerId);
+    } catch (error) {
+      claimerUser.cash = previousCash;
+      if (previousXp === undefined) delete claimerUser.xpData;
+      else claimerUser.xpData.xp = previousXp;
+      if (previousLedger) claimerUser.artifactShardLedger = previousLedger;
+      else delete claimerUser.artifactShardLedger;
+      await guildSettingsCollection.updateOne(
+        { _id: guildId, 'communityQuest.weekKey': community.weekKey },
+        { $pull: { 'communityQuest.claimedBy': claimerId } }
+      ).catch(() => {});
+      throw error;
+    }
+    community.claimedBy = [...new Set([...(community.claimedBy || []), claimerId])];
 
     await interaction.reply({
-      content: `🎁 You claimed **$${community.cashReward.toLocaleString()} + ${community.xpReward} XP** from the community quest!`,
+      content: `🎁 You claimed **$${community.cashReward.toLocaleString()} + ${community.xpReward} XP** and **${shardReward.awarded} shard${shardReward.awarded === 1 ? '' : 's'}** from the community quest!` +
+        (shardReward.cashCompensation ? ` Your monthly shard cap was reached, so **$${shardReward.cashCompensation.toLocaleString()}** was added instead for overflow shards.` : ''),
       ephemeral: true
     });
 
@@ -6061,6 +6228,11 @@ async function handleComponentInteraction(interaction) {
     user.cash += QUEST_FULL_CLEAR_BONUS_CASH;
     if (!user.xpData) user.xpData = { xp: 0, messageCount: 0, lastMessage: 0 };
     user.xpData.xp += QUEST_FULL_CLEAR_BONUS_XP;
+    const weekKey = getWeekDateKey();
+    if (user.weeklyFullClearShardWeekKey !== weekKey) {
+      awardArtifactShards(user, WEEKLY_FULL_CLEAR_SHARD_REWARD);
+      user.weeklyFullClearShardWeekKey = weekKey;
+    }
     await saveUser(ownerId);
 
     const guildIdForCommunity = interaction.guildId;
@@ -6192,9 +6364,7 @@ function parseCashInput(raw) {
 
 function tradeMatchesQuery(name, query) {
   if (!query) return true;
-  const clean = (name.startsWith('✨ SHINY ') && name.endsWith(' ✨'))
-    ? name.replace('✨ SHINY ', '').replace(' ✨', '')
-    : name;
+  const clean = getArtefactBaseName(name);
   const q = query.toLowerCase();
   return clean.toLowerCase().includes(q) || name.toLowerCase().includes(q);
 }
@@ -6215,7 +6385,7 @@ function buildTradePickerComponents(tradeId, picker, entries, valueKey) {
       const rarity = getRarityByArtefact(name);
       const tier = getArtefactTier(name);
       const val = calcArtefactTradeValue(name, rarity);
-      const isShiny = name.startsWith('✨ SHINY ') && name.endsWith(' ✨');
+      const isShiny = isShinyArtefact(name);
       const safeValue = name.length > 100 ? name.slice(0, 100) : name;
       return {
         label: name.length > 100 ? name.slice(0, 97) + '...' : name,
@@ -6352,7 +6522,7 @@ function formatOfferDetailed(offer) {
     const tier = getArtefactTier(name);
     const val = calcArtefactTradeValue(name, rarity);
     const rarityName = rarity ? rarity.name : 'Unknown';
-    const isShiny = name.startsWith('✨ SHINY ') && name.endsWith(' ✨');
+    const isShiny = isShinyArtefact(name);
     const shinyTag = isShiny ? ' ✨5×' : '';
     if (count > 1) {
       const totalVal = val * count;
@@ -6901,7 +7071,8 @@ async function handleFishCommand(interaction, userId) {
       if (r <= 0) { selectedRarity = rarity; break; }
     }
     if (selectedRarity && selectedRarity.items.length > 0) {
-      artefactDrop = selectedRarity.items[Math.floor(Math.random() * selectedRarity.items.length)];
+      const dropBaseName = selectedRarity.items[Math.floor(Math.random() * selectedRarity.items.length)];
+      artefactDrop = makeArtefactName(dropBaseName, selectedRarity.stars);
     }
   }
 
@@ -6986,16 +7157,17 @@ async function handleReelIn(interaction, sessionId) {
     if (!userData[userId].artefacts) userData[userId].artefacts = [];
     if (!userData[userId].discoveredArtefacts) userData[userId].discoveredArtefacts = [];
     userData[userId].artefacts.push(artefactDrop);
-    if (!userData[userId].discoveredArtefacts.includes(artefactDrop)) {
-      userData[userId].discoveredArtefacts.push(artefactDrop);
+    const collectionKey = getCollectionKey(artefactDrop);
+    if (!userData[userId].discoveredArtefacts.includes(collectionKey)) {
+      userData[userId].discoveredArtefacts.push(collectionKey);
     }
   }
 
   await updateQuestProgress(userId, interaction.guildId, 'fish', 1);
   if (artefactDrop) {
-    const dropIsShiny = artefactDrop.startsWith('✨ SHINY ') && artefactDrop.endsWith(' ✨');
+    const dropIsShiny = isShinyArtefact(artefactDrop);
     const dropRarity = getRarityByArtefact(artefactDrop);
-    if (dropRarity && ['3-Star', '4-Star', '5-Star'].includes(dropRarity.name)) {
+    if (dropRarity && dropRarity.stars >= 3) {
       await updateQuestProgress(userId, interaction.guildId, 'find3StarPlus', 1);
     }
     if (dropIsShiny) {
@@ -8464,25 +8636,58 @@ function buildGiveArtefactComponents(sessionId, session) {
   );
 
   const selectedRarityData = rarities.find(r => r.name === session.selectedRarity);
+  const artefactPageSize = 25;
+  const artefactTotalPages = selectedRarityData
+    ? Math.max(1, Math.ceil(selectedRarityData.items.length / artefactPageSize))
+    : 1;
+  session.artefactPage = Math.max(0, Math.min(session.artefactPage || 0, artefactTotalPages - 1));
+  const artefactPageItems = selectedRarityData
+    ? selectedRarityData.items.slice(
+        session.artefactPage * artefactPageSize,
+        (session.artefactPage + 1) * artefactPageSize
+      )
+    : [];
   const artefactRow = new ActionRowBuilder().addComponents(
     new StringSelectMenuBuilder()
       .setCustomId(`ga_select_${sessionId}`)
-      .setPlaceholder(session.selectedRarity ? `Step 2 — Select a ${session.selectedRarity} artefact` : 'Step 2 — Pick a rarity first')
+      .setPlaceholder(session.selectedRarity
+        ? `Step 2 — Select a ${session.selectedRarity} artefact${artefactTotalPages > 1 ? ` (page ${session.artefactPage + 1}/${artefactTotalPages})` : ''}`
+        : 'Step 2 — Pick a rarity first')
       .setDisabled(!selectedRarityData)
       .addOptions(selectedRarityData
-        ? selectedRarityData.items.map(item => {
-            const tier = getArtefactTier(item);
-            const tierSell = calcArtefactSellValue(item, selectedRarityData);
+        ? artefactPageItems.map(item => {
+            const variant = makeArtefactName(item, selectedRarityData.stars);
+            const tier = getArtefactTier(variant);
+            const tierSell = calcArtefactSellValue(variant, selectedRarityData);
             return {
-              label: item,
+              label: variant,
               description: `T${tier} — $${tierSell.toLocaleString()} sell value`,
-              value: item,
-              default: session.selectedArtefact === item
+              value: variant,
+              default: session.selectedArtefact === variant
             };
           })
         : [{ label: 'No rarity selected', value: '_placeholder', default: false }]
       )
   );
+  const artefactPageRow = artefactTotalPages > 1
+    ? new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId(`ga_prev_page_${sessionId}`)
+          .setLabel('◀ Artefacts')
+          .setStyle(ButtonStyle.Secondary)
+          .setDisabled(session.artefactPage === 0),
+        new ButtonBuilder()
+          .setCustomId(`ga_page_info_${sessionId}`)
+          .setLabel(`Artefacts ${session.artefactPage + 1}/${artefactTotalPages}`)
+          .setStyle(ButtonStyle.Secondary)
+          .setDisabled(true),
+        new ButtonBuilder()
+          .setCustomId(`ga_next_page_${sessionId}`)
+          .setLabel('More Artefacts ▶')
+          .setStyle(ButtonStyle.Secondary)
+          .setDisabled(session.artefactPage >= artefactTotalPages - 1)
+      )
+    : null;
 
   const hasSelection = !!session.selectedArtefact;
   const hasQueue = session.queue.length > 0;
@@ -8515,7 +8720,7 @@ function buildGiveArtefactComponents(sessionId, session) {
       .setStyle(ButtonStyle.Danger)
   );
 
-  return [rarityRow, artefactRow, buttonRow];
+  return [rarityRow, artefactRow, ...(artefactPageRow ? [artefactPageRow] : []), buttonRow];
 }
 
 async function handleGiveArtefactCommand(interaction) {
@@ -8538,6 +8743,7 @@ async function handleGiveArtefactCommand(interaction) {
     targetDisplayName: targetUser.displayName,
     selectedRarity: null,
     selectedArtefact: null,
+    artefactPage: 0,
     queue: [],
     message: null
   };
@@ -8561,10 +8767,19 @@ async function handleGiveArtefactCommand(interaction) {
     if (i.customId === `ga_rarity_${sessionId}`) {
       session.selectedRarity = i.values[0];
       session.selectedArtefact = null; // reset artefact when rarity changes
+      session.artefactPage = 0;
       await i.update({ embeds: [buildGiveArtefactEmbed(session)], components: buildGiveArtefactComponents(sessionId, session) });
 
     } else if (i.customId === `ga_select_${sessionId}`) {
       session.selectedArtefact = i.values[0];
+      await i.update({ embeds: [buildGiveArtefactEmbed(session)], components: buildGiveArtefactComponents(sessionId, session) });
+
+    } else if (i.customId === `ga_prev_page_${sessionId}`) {
+      session.artefactPage = Math.max(0, session.artefactPage - 1);
+      await i.update({ embeds: [buildGiveArtefactEmbed(session)], components: buildGiveArtefactComponents(sessionId, session) });
+
+    } else if (i.customId === `ga_next_page_${sessionId}`) {
+      session.artefactPage++;
       await i.update({ embeds: [buildGiveArtefactEmbed(session)], components: buildGiveArtefactComponents(sessionId, session) });
 
     } else if (i.customId === `ga_add_one_${sessionId}`) {
@@ -9204,21 +9419,12 @@ function buildCollectionPage(user, pageIndex) {
 
   if (!user.discoveredArtefacts) user.discoveredArtefacts = [];
 
-  const discovered = new Set([
-    ...user.discoveredArtefacts,
-    ...(user.artefacts || []).map(a =>
-      a.startsWith('✨ SHINY ') && a.endsWith(' ✨')
-        ? a.replace('✨ SHINY ', '').replace(' ✨', '')
-        : a
-    )
-  ]);
+  const discovered = new Set(user.discoveredArtefacts.map(getCollectionKey));
 
   const inventoryCounts = {};
   for (const a of (user.artefacts || [])) {
-    const base = a.startsWith('✨ SHINY ') && a.endsWith(' ✨')
-      ? a.replace('✨ SHINY ', '').replace(' ✨', '')
-      : a;
-    inventoryCounts[base] = (inventoryCounts[base] || 0) + 1;
+    const key = getCollectionKey(a);
+    inventoryCounts[key] = (inventoryCounts[key] || 0) + 1;
   }
 
   const byTier = { 1: [], 2: [], 3: [], 4: [], 5: [] };
@@ -9227,11 +9433,12 @@ function buildCollectionPage(user, pageIndex) {
     byTier[tier].push(item);
   }
 
-  const collectedCount = items.filter(i => discovered.has(i)).length;
+  const collectedCount = items.filter(item =>
+    discovered.has(makeArtefactName(item, rarity.stars))
+  ).length;
   const totalCount = items.length;
   const progressBar = buildProgressBar(collectedCount, totalCount);
 
-  const rarityEmoji = { '1-Star': '⭐', '2-Star': '⭐⭐', '3-Star': '⭐⭐⭐', '4-Star': '⭐⭐⭐⭐', '5-Star': '⭐⭐⭐⭐⭐' };
   const tierLabel = { 1: 'Tier I  ·  ×0.65 value', 2: 'Tier II  ·  ×0.75 value', 3: 'Tier III  ·  ×1.0 value', 4: 'Tier IV  ·  ×1.25 value', 5: 'Tier V  ·  ×1.35 value' };
 
   const fields = [];
@@ -9240,26 +9447,31 @@ function buildCollectionPage(user, pageIndex) {
     if (!tierItems || tierItems.length === 0) continue;
 
     const lines = tierItems.map(item => {
-      const isFound = discovered.has(item);
-      const count = inventoryCounts[item] || 0;
-      const sellValue = calcArtefactSellValue(item, rarity).toLocaleString();
+      const variant = makeArtefactName(item, rarity.stars);
+      const isFound = discovered.has(variant);
+      const count = inventoryCounts[variant] || 0;
+      const sellValue = calcArtefactSellValue(variant, rarity).toLocaleString();
       const countStr = count > 0 ? `  *(×${count} in vault)*` : '';
       const icon = isFound ? '✅' : '❌';
-      const nameStr = isFound ? `**${item}**` : `~~${item}~~`;
+      const nameStr = isFound ? `**${variant}**` : `~~${variant}~~`;
       return `${icon}  ${nameStr}  ·  $${sellValue}${countStr}`;
     });
 
-    fields.push({
-      name: `▬▬▬  ${tierLabel[tier]}  ▬▬▬`,
-      value: lines.join('\n'),
-      inline: false
-    });
+    const linesPerField = 8;
+    for (let start = 0; start < lines.length; start += linesPerField) {
+      const chunk = lines.slice(start, start + linesPerField);
+      fields.push({
+        name: `▬▬▬  ${tierLabel[tier]}${start ? ' · continued' : ''}  ▬▬▬`,
+        value: chunk.join('\n'),
+        inline: false
+      });
+    }
   }
 
   const embedColor = rarity.color === 0x000000 ? 0x2B2D31 : rarity.color;
 
   return new EmbedBuilder()
-    .setTitle(`${rarityEmoji[rarity.name] || '📋'}  Field Guide — ${rarity.name}`)
+    .setTitle(`${getRarityEmoji(rarity.name)}  Field Guide — ${rarity.name}`)
     .setDescription(
       `**${collectedCount} / ${totalCount} discovered**  ${progressBar}\n` +
       `*Drop chance: ${rarity.chance}%  ·  Base sell value: $${rarity.sell.toLocaleString()}*`
@@ -9300,6 +9512,8 @@ function buildQuestsPayload(user, dq, community, userId) {
   const sectionEmojis = { action: '⚔️', economy: '💰', social: '💬' };
   const sections = ['action', 'economy', 'social'];
   const lines = [];
+  const shardLedger = ensureShardLedger(user);
+  const weeklyShardClaimed = user.weeklyFullClearShardWeekKey === getWeekDateKey();
 
   for (const section of sections) {
     const sectionQuests = dq.quests.filter(q => q.section === section);
@@ -9321,7 +9535,13 @@ function buildQuestsPayload(user, dq, community, userId) {
     .setTitle('📋 Daily Quests')
     .setDescription(lines.join('\n'))
     .addFields(
-      { name: 'Progress', value: `${completedCount}/9 complete · ${claimedCount}/9 claimed${dq.fullClearBonus ? ' 🏆 **FULL CLEAR!**' : ''}`, inline: false }
+      { name: 'Progress', value: `${completedCount}/9 complete · ${claimedCount}/9 claimed${dq.fullClearBonus ? ' 🏆 **FULL CLEAR!**' : ''}`, inline: false },
+      {
+        name: '🔹 Artifact Shards',
+        value: `Balance: **${shardLedger.balance}** · Earned this UTC month: **${shardLedger.earnedThisMonth}/${SHARD_MONTHLY_CAP}**\n` +
+          `First full-clear claim each week: ${weeklyShardClaimed ? '**already awarded**' : `**+${WEEKLY_FULL_CLEAR_SHARD_REWARD} shard**`}. Excess monthly rewards convert to **$${SHARD_OVERFLOW_CASH} per shard**.`,
+        inline: false
+      }
     )
     .setColor(0x339AF0)
     .setFooter({ text: '✅ Ready  ·  💰 Claimed  ·  ▫️ In progress  ·  Personal quests reset daily' })
@@ -9332,7 +9552,7 @@ function buildQuestsPayload(user, dq, community, userId) {
     const alreadyClaimed = community.claimedBy && community.claimedBy.includes(userId);
     embed.addFields({
       name: `🌍 Weekly Server Quest: ${community.label}`,
-      value: `${community.desc}\nProgress: ${commStatus}\nReward per contributor: $${community.cashReward.toLocaleString()} + ${community.xpReward} XP` +
+      value: `${community.desc}\nProgress: ${commStatus}\nReward per eligible claimant: $${community.cashReward.toLocaleString()} + ${community.xpReward} XP + ${COMMUNITY_QUEST_SHARD_REWARD} shards (subject to the monthly cap)` +
         (community.contributors.includes(userId) ? (alreadyClaimed ? '\n💰 *You already claimed your reward.*' : '\n*You have contributed this week!*') : ''),
       inline: false
     });
@@ -9409,6 +9629,7 @@ async function handleQuestsCommand(interaction, userId) {
 
   const user = await getUser(userId);
   const dq = ensureDailyQuests(user);
+  ensureShardLedger(user);
   await saveUser(userId);
 
   const guildId = interaction.guildId;
@@ -9463,7 +9684,7 @@ async function handleObserveCommand(interaction, observerId) {
   const totalWealth = target.cash + (target.bankBalance || 0);
 
   const collectionValue = (target.artefacts || []).reduce((sum, name) => {
-    const isShiny = name.startsWith('✨ SHINY ') && name.endsWith(' ✨');
+    const isShiny = isShinyArtefact(name);
     const rarity = getRarityByArtefact(name);
     const tierSell = calcArtefactSellValue(name, rarity);
     return sum + (isShiny ? tierSell * 5 : tierSell);
@@ -9485,7 +9706,7 @@ async function handleObserveCommand(interaction, observerId) {
     const rarity = getRarityByArtefact(name);
     const tier = getArtefactTier(name);
     const tierSell = calcArtefactSellValue(name, rarity);
-    const isShiny = name.startsWith('✨ SHINY ') && name.endsWith(' ✨');
+    const isShiny = isShinyArtefact(name);
     const sellDisplay = isShiny ? tierSell * 5 : tierSell;
     const countSuffix = count > 1 ? ` [${count}]` : '';
     const emoji = getRarityEmoji(rarity ? rarity.name : '');
