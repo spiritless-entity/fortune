@@ -119,8 +119,6 @@ let guildItemsCollection;
 let globalItemsCollection;
 let guildSettingsCollection;
 let marketStateCollection;
-let raidSeasonCollection;
-let raidPlayersCollection;
 let serverBlacklistCollection;
 
 async function initializeDatabase() {
@@ -147,8 +145,6 @@ async function initializeDatabase() {
     globalItemsCollection = db.collection('globalItems');
     guildSettingsCollection = db.collection('guildSettings');
     marketStateCollection = db.collection('marketState');
-    raidSeasonCollection      = db.collection('raidSeason');
-    raidPlayersCollection     = db.collection('raidPlayers');
     serverBlacklistCollection = db.collection('serverBlacklist');
 
     const eventSystem = await eventSystemCollection.findOne({ _id: 'main' });
@@ -186,7 +182,6 @@ global.messageTracker = {};
 global.giveArtefactSessions = {};
 global.massSellSessions = {};
 global.activeFishSessions = {};
-global.activeRaidBrowseSessions = {};
 
 
 const FISH_COOLDOWN = 20 * 60 * 1000; // 20 minutes
@@ -276,393 +271,6 @@ function rollFishValue(fish) {
   return Math.floor(Math.random() * (max - min + 1)) + min;
 }
 
-
-const RAID_UNITS = [
-  { id: 'peasant_levy',   name: 'Peasant Levy',    cost: 100,  baseCP: 8,   archetype: 'mob',        ascii: ' ( o )\n  \\|/\n  / \\',   description: 'Conscripted farmers armed with whatever they could find. Individually unremarkable — but coin is scarce and bodies are not.' },
-  { id: 'crossbowman',   name: 'Crossbowman',      cost: 350,  baseCP: 18,  archetype: 'ranged',     ascii: ' ( o )\n--|-->\n  / \\',   description: 'A disciplined ranged fighter trained to loose bolts before the lines ever meet. Keeps the enemy honest at distance.' },
-  { id: 'spearman',      name: 'Spearman',         cost: 300,  baseCP: 15,  archetype: 'phalanx',    ascii: ' ( o )\n  \\|/\\\n  / \\',  description: 'A steady line-holder trained to brace against charges. The wall that keeps your ground when everything else breaks.' },
-  { id: 'man_at_arms',   name: 'Man-at-Arms',      cost: 600,  baseCP: 28,  archetype: 'armored',    ascii: ' { o }\n [|||]\n /| |\\',  description: 'Professional infantry clad in chainmail and carrying the scars to prove it. The backbone of any army worth fearing.' },
-  { id: 'squire',        name: 'Squire',           cost: 500,  baseCP: 22,  archetype: 'skirmisher', ascii: ' ( o )\n  -\\|-\n  / \\',   description: 'A knight-in-training burning to prove his worth. Quick, capable, and hungrier than his superiors.' },
-  { id: 'sergeant',      name: 'Sergeant',         cost: 900,  baseCP: 40,  archetype: 'veteran',    ascii: ' [_o_]\n  )|(\n /| |\\',   description: 'A battle-hardened veteran who has buried too many men to fear anything. Holds the line so others do not break.' },
-  { id: 'knight',        name: 'Knight',           cost: 2000, baseCP: 90,  archetype: 'vanguard',   ascii: ' [#o#]\n [|||]\n /|_|\\',  description: 'A fully armoured warrior bound by blood and blade. Among the most feared on any field — and they know it.' },
-  { id: 'cavalry',       name: 'Cavalry',          cost: 1800, baseCP: 75,  archetype: 'mounted',    ascii: ' ( o )\n /VVV\\\n/     \\', description: 'Mounted warriors who shatter enemy lines with terrifying charges. No formation survives a flank unchanged.' },
-  { id: 'siege_engineer',name: 'Siege Engineer',   cost: 1500, baseCP: 60,  archetype: 'siege',      ascii: ' ( o )\n_|_[==\n  / \\',   description: 'Operates trebuchets, ballistae, and battering rams. Where walls stand, the siege engineer ends them.' },
-  { id: 'battle_mage',   name: 'Battle Mage',      cost: 3000, baseCP: 130, archetype: 'mystical',   ascii: ' (***)\n  ~|~\n  / \\',    description: 'A sorcerer who traded grimoires for war. Commands arcane force that tears through armour and morale in equal measure.' }
-];
-
-
-const RAID_ARCHETYPES = {
-  mob: {
-    name: 'Mob', emoji: '🪖',
-    description: '🪖 Conscripted bodies with no discipline and no future. Strength in numbers alone — and even that has its limits.',
-    counters: [],
-    weakTo:   ['ranged', 'veteran', 'vanguard']
-  },
-  ranged: {
-    name: 'Ranged', emoji: '🏹',
-    description: '🏹 Looses bolts before the lines ever meet. Controls the gap, punishes exposed formations, and dictates the terms of engagement.',
-    counters: ['mob', 'mounted'],
-    weakTo:   ['armored', 'skirmisher']
-  },
-  phalanx: {
-    name: 'Phalanx', emoji: '🛡️',
-    description: '🛡️ A wall of overlapping shields and forward spears. Unmovable when it holds — devastating when it advances.',
-    counters: ['mounted', 'vanguard'],
-    weakTo:   ['siege']
-  },
-  armored: {
-    name: 'Armored', emoji: '⚔️',
-    description: '⚔️ Heavy steel and professional discipline. Absorbs what would kill lesser men and keeps marching forward.',
-    counters: ['ranged'],
-    weakTo:   ['siege', 'mystical']
-  },
-  skirmisher: {
-    name: 'Skirmisher', emoji: '🗡️',
-    description: '🗡️ Fast, unpredictable, and dangerous up close. Dismantles ranged lines and siege machinery before either can respond.',
-    counters: ['ranged', 'siege'],
-    weakTo:   ['veteran', 'mounted']
-  },
-  veteran: {
-    name: 'Veteran', emoji: '🎖️',
-    description: '🎖️ Hardened by campaigns no one else survived. Reads the enemy before they move and crushes the undisciplined without pause.',
-    counters: ['mob', 'skirmisher'],
-    weakTo:   ['vanguard', 'mounted']
-  },
-  vanguard: {
-    name: 'Vanguard', emoji: '⚜️',
-    description: '⚜️ The blade edge of an army. Elite, devastating, and bred for decisive engagements where lesser soldiers would break.',
-    counters: ['veteran', 'mob'],
-    weakTo:   ['phalanx', 'mystical']
-  },
-  mounted: {
-    name: 'Mounted', emoji: '🐎',
-    description: '🐎 Speed, momentum, and shock. Shatters lines that cannot brace in time and pursues anything that tries to run.',
-    counters: ['veteran', 'skirmisher'],
-    weakTo:   ['phalanx', 'ranged', 'mystical']
-  },
-  siege: {
-    name: 'Siege', emoji: '🪨',
-    description: '🪨 Slow, methodical, and catastrophic at range. No formation endures sustained bombardment — and none can close the distance in time.',
-    counters: ['armored', 'phalanx'],
-    weakTo:   ['skirmisher']
-  },
-  mystical: {
-    name: 'Mystical', emoji: '🔮',
-    description: '🔮 Force that operates entirely outside the rules of conventional warfare. Steel, armour, and formation are meaningless to it.',
-    counters: ['armored', 'vanguard', 'mounted'],
-    weakTo:   []
-  }
-};
-
-const RAID_COUNTER_NARRATIVES = {
-  'ranged_mob':         'Bolts tear through the packed ranks before a single levy can close the gap. Range wins before the fight truly begins.',
-  'ranged_mounted':     'Volleys of fire punish the charge while momentum is still building. Horse and rider go down before the line is reached.',
-  'armored_ranged':     'Chainmail and plate turn aside what the bolts intended. The crossbow line runs out of answers as the steel keeps walking forward.',
-  'phalanx_mounted':   'The spear wall braces and holds its ground. The cavalry charge breaks against a hedge of pikes — momentum converted to carnage.',
-  'phalanx_vanguard':  'For all their individual skill, the knights find no gap. The spear wall holds what the blade alone cannot cut through.',
-  'siege_armored':     'Trebuchet stones do not negotiate with chainmail. The bombardment turns heavy infantry into a liability — nowhere to shelter, nothing to absorb it.',
-  'siege_phalanx':     'A tight formation is a siege engine\'s favourite target. Stone and fire scatter the spear wall before it can ever press forward.',
-  'skirmisher_ranged': 'The skirmishers close the distance before the crossbow line can reload. Up close, the ranged advantage disappears entirely.',
-  'skirmisher_siege':  'Fast and irregular, the skirmishers reach the war machines before the engineers can respond. The siege line collapses from within.',
-  'veteran_mob':       'Discipline meets chaos. The sergeants hold their line as the levy breaks against it — never finding purchase, never threatening the formation.',
-  'veteran_skirmisher':'The veterans read the feints and do not take the bait. Experience outlasts unpredictability every time.',
-  'vanguard_veteran':  'Even hardened soldiers struggle when elite steel arrives. Battle-worn iron bends under the weight of the charge.',
-  'vanguard_mob':      'The knights carve through the mob without slowing. No formation, no discipline — the levy has nothing to offer a Vanguard advance.',
-  'mounted_veteran':   'The cavalry flanks before the veterans can adjust their line. Speed renders earned experience irrelevant.',
-  'mounted_skirmisher':'The horses are faster. The skirmishers scatter trying to disengage, but mounted pursuit closes every gap they open.',
-  'mystical_armored':  'Arcane force passes through plate and chain as though they are not there. The heaviest infantry on the field suddenly has no answer.',
-  'mystical_vanguard': 'The knights charge toward an enemy that does not obey the rules of the field. Elite steel meets arcane force — and the steel loses.',
-  'mystical_mounted':  'Speed means nothing when the threat reaches you without moving. The cavalry charge ends before it covers the ground.'
-};
-
-const BATTLE_SECTION_NAMES = [
-  'THE EASTERN FLANK', 'THE WESTERN FLANK', 'THE LEFT WING',
-  'THE RIGHT WING',    'THE CENTER',         'THE VANGUARD LINE',
-  'THE REAR GUARD',    'THE OPEN FIELD',     'THE RIDGE LINE'
-];
-
-function generateBattleScenes(attackerData, defenderData, attackerName, defenderName, deployMerc) {
-  const scenes      = [];
-  const usedPairs   = new Set();
-  const usedSections = [];
-
-  const matchups = [];
-  for (const uA of RAID_UNITS) {
-    const aCount = (attackerData.soldiers?.[uA.id] || 0);
-    if (aCount === 0) continue;
-    const archA = RAID_ARCHETYPES[uA.archetype];
-    for (const uD of RAID_UNITS) {
-      const dCount = (defenderData.soldiers?.[uD.id] || 0);
-      if (dCount === 0) continue;
-      const aCountersD = archA.counters.includes(uD.archetype);
-      const dCountersA = RAID_ARCHETYPES[uD.archetype].counters.includes(uA.archetype);
-      if (!aCountersD && !dCountersA) continue;
-      matchups.push({ uA, uD, aCount, dCount, aCountersD, dCountersA, significance: aCount * uA.baseCP + dCount * uD.baseCP });
-    }
-  }
-  matchups.sort((a, b) => b.significance - a.significance);
-
-  for (const m of matchups) {
-    if (scenes.length >= 3) break;
-    const pairKey = `${m.uA.archetype}_${m.uD.archetype}`;
-    const pairKeyR = `${m.uD.archetype}_${m.uA.archetype}`;
-    if (usedPairs.has(pairKey) || usedPairs.has(pairKeyR)) continue;
-    usedPairs.add(pairKey);
-
-    let sectionName = BATTLE_SECTION_NAMES.find(s => !usedSections.includes(s)) || BATTLE_SECTION_NAMES[0];
-    usedSections.push(sectionName);
-
-    const artA = m.uA.ascii.split('\n')[0].trim();
-    const artD = m.uD.ascii.split('\n')[0].trim();
-
-    let narrative, advantageLine;
-    if (m.aCountersD && !m.dCountersA) {
-      narrative     = RAID_COUNTER_NARRATIVES[`${m.uA.archetype}_${m.uD.archetype}`] || `${m.uA.name} has the advantage over ${m.uD.name} on this line.`;
-      advantageLine = `ADVANTAGE -- ${attackerName}`;
-    } else if (m.dCountersA && !m.aCountersD) {
-      narrative     = RAID_COUNTER_NARRATIVES[`${m.uD.archetype}_${m.uA.archetype}`] || `${m.uD.name} has the advantage over ${m.uA.name} on this line.`;
-      advantageLine = `ADVANTAGE -- ${defenderName}`;
-    } else {
-      narrative     = 'Both sides press forward. The advantage shifts with every exchange — neither formation is willing to break first.';
-      advantageLine = 'CONTESTED';
-    }
-
-    scenes.push([
-      '==========================================',
-      `  ${sectionName}`,
-      `  ${attackerName}: ${artA} x${m.aCount} ${m.uA.name}`,
-      `  ${defenderName}: ${artD} x${m.dCount} ${m.uD.name}`,
-      '==========================================',
-      `  ${narrative}`,
-      '',
-      `  ${advantageLine}`,
-      '==========================================',
-    ].join('\n'));
-  }
-
-  if (scenes.length === 0) {
-    scenes.push([
-      '==========================================',
-      `  ${BATTLE_SECTION_NAMES[0]}`,
-      `  ${attackerName} meets ${defenderName} on open ground`,
-      '==========================================',
-      '  No decisive archetype advantage on any line.',
-      '  The outcome rests on training and numbers alone.',
-      '==========================================',
-    ].join('\n'));
-  }
-
-  if (deployMerc) {
-    scenes.push([
-      '==========================================',
-      '  THE SELLSWORD',
-      `  ${attackerName} deploys a Sellsword Captain`,
-      '==========================================',
-      '  The captain cuts through the chaos, fighting for coin',
-      '  and not crown — bringing ruthlessness no formation',
-      '  can account for.',
-      '==========================================',
-    ].join('\n'));
-  }
-
-  return scenes;
-}
-
-function calcRaidCPWithMatchups(attackerRaidData, defenderRaidData, deployMerc = false) {
-  const defArchetypes = new Set();
-  const attArchetypes = new Set();
-  for (const u of RAID_UNITS) {
-    if ((attackerRaidData.soldiers?.[u.id] || 0) > 0) attArchetypes.add(u.archetype);
-    if ((defenderRaidData.soldiers?.[u.id] || 0) > 0) defArchetypes.add(u.archetype);
-  }
-
-  let attackerAdjusted = 0, defenderAdjusted = 0;
-
-  for (const u of RAID_UNITS) {
-    const arch = RAID_ARCHETYPES[u.archetype];
-
-    const aCount = (attackerRaidData.soldiers?.[u.id] || 0);
-    if (aCount > 0) {
-      const aLevel = (attackerRaidData.trainingLevels?.[u.id] || 1);
-      let aCP = aCount * u.baseCP * (TRAINING_MULTIPLIERS[aLevel] || 1.0);
-      if (arch.counters.some(c => defArchetypes.has(c))) aCP *= 1.1;
-      if (arch.weakTo.some(w => defArchetypes.has(w)))   aCP *= 0.9;
-      attackerAdjusted += aCP;
-    }
-
-    const dCount = (defenderRaidData.soldiers?.[u.id] || 0);
-    if (dCount > 0) {
-      const dLevel = (defenderRaidData.trainingLevels?.[u.id] || 1);
-      let dCP = dCount * u.baseCP * (TRAINING_MULTIPLIERS[dLevel] || 1.0);
-      if (arch.counters.some(c => attArchetypes.has(c))) dCP *= 1.1;
-      if (arch.weakTo.some(w => attArchetypes.has(w)))   dCP *= 0.9;
-      defenderAdjusted += dCP;
-    }
-  }
-
-  if (deployMerc) attackerAdjusted += RAID_MERCENARY.cp;
-  return { attackerAdjusted: Math.floor(attackerAdjusted), defenderAdjusted: Math.floor(defenderAdjusted) };
-}
-
-const RAID_UNITS_PER_PAGE = 3;
-
-const RAID_MERCENARY = {
-  id: 'sellsword_captain', name: 'Sellsword Captain', cost: 5000, cp: 250,
-  ascii: ' (XoX)\n /|\\/|\n  / \\',
-  description: 'A ruthless captain who fights for coin, not crown. Deployed once per raid and gone when it ends — win or lose. Does not count toward standing Relative CP.'
-};
-
-const TRAINING_MULTIPLIERS = { 1: 1.00, 2: 1.20, 3: 1.40, 4: 1.65, 5: 2.00 };
-const TRAINING_COSTS       = { 2: 800, 3: 2500, 4: 7000, 5: 18000 };
-const TRAINING_LABELS      = { 2: 'Lv.2 (+20%)', 3: 'Lv.3 (+40%)', 4: 'Lv.4 (+65%)', 5: 'Lv.5 (+100%)' };
-
-const RAID_PAYOUT_RATE = 500;
-const RAID_PAYOUT_CAP  = 5000;
-
-
-async function getRaidSeason() {
-  if (!raidSeasonCollection) return { active: false, startedAt: null, endsAt: null, seasonId: 0 };
-  const doc = await raidSeasonCollection.findOne({ _id: 'main' });
-  return doc || { active: false, startedAt: null, endsAt: null, seasonId: 0 };
-}
-
-async function saveRaidSeason(data) {
-  await raidSeasonCollection.replaceOne({ _id: 'main' }, { _id: 'main', ...data }, { upsert: true });
-}
-
-
-function defaultRaidPlayer(userId) {
-  const soldiers = {}, trainingLevels = {};
-  for (const u of RAID_UNITS) { soldiers[u.id] = 0; trainingLevels[u.id] = 1; }
-  return { _id: userId, soldiers, trainingLevels, mercenariesOwned: 0, raidsInitiated: [], raidsCompleted: 0, victories: 0, losses: 0 };
-}
-
-async function getRaidPlayer(userId) {
-  if (!raidPlayersCollection) return defaultRaidPlayer(userId);
-  return (await raidPlayersCollection.findOne({ _id: userId })) || defaultRaidPlayer(userId);
-}
-
-async function saveRaidPlayer(data) {
-  await raidPlayersCollection.replaceOne({ _id: data._id }, data, { upsert: true });
-}
-
-async function getAllRaidPlayers() {
-  if (!raidPlayersCollection) return [];
-  return await raidPlayersCollection.find({}).toArray();
-}
-
-
-function calcRaidCP(raidData) {
-  let relative = 0, actual = 0;
-  for (const u of RAID_UNITS) {
-    const count = (raidData.soldiers || {})[u.id] || 0;
-    const level = (raidData.trainingLevels || {})[u.id] || 1;
-    relative += count * u.baseCP;
-    actual   += count * u.baseCP * (TRAINING_MULTIPLIERS[level] || 1.0);
-  }
-  return { relative: Math.floor(relative), actual: Math.floor(actual) };
-}
-
-
-async function buildRaidStoreSection(raidSubTab, raidPage, userId) {
-  const raidData  = await getRaidPlayer(userId);
-  const pageCount = raidSubTab === 'mercenaries' ? 1 : Math.ceil(RAID_UNITS.length / RAID_UNITS_PER_PAGE);
-  const safePage  = Math.max(0, Math.min(raidPage, pageCount - 1));
-
-  const subNavRow = new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId('store_tab_raid_military_0').setLabel('Buy Military')
-      .setStyle(raidSubTab === 'military' ? ButtonStyle.Primary : ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId('store_tab_raid_training_0').setLabel('Training')
-      .setStyle(raidSubTab === 'training' ? ButtonStyle.Primary : ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId('store_tab_raid_mercenaries_0').setLabel('Mercenaries')
-      .setStyle(raidSubTab === 'mercenaries' ? ButtonStyle.Primary : ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId(`store_tab_raid_${raidSubTab}_${safePage - 1}_prev`).setLabel('< Prev')
-      .setStyle(ButtonStyle.Secondary).setDisabled(safePage === 0 || raidSubTab === 'mercenaries'),
-    new ButtonBuilder().setCustomId(`store_tab_raid_${raidSubTab}_${safePage + 1}_next`).setLabel('Next >')
-      .setStyle(ButtonStyle.Secondary).setDisabled(safePage >= pageCount - 1 || raidSubTab === 'mercenaries')
-  );
-
-  const additionalComponents = [subNavRow];
-  const fields = [];
-
-  if (raidSubTab === 'military') {
-    const pageUnits = RAID_UNITS.slice(safePage * RAID_UNITS_PER_PAGE, (safePage + 1) * RAID_UNITS_PER_PAGE);
-    for (const u of pageUnits) {
-      const owned = (raidData.soldiers || {})[u.id] || 0;
-      const arch  = RAID_ARCHETYPES[u.archetype];
-      const countersText = arch.counters.length > 0 ? arch.counters.map(c => RAID_ARCHETYPES[c].name).join(', ') : 'None';
-      const weakToText   = arch.weakTo.length   > 0 ? arch.weakTo.map(w => RAID_ARCHETYPES[w].name).join(', ')   : 'None';
-      fields.push({
-        name:  `${u.name}   |   $${u.cost.toLocaleString()} each   |   Base CP: ${u.baseCP}   |   ${arch.emoji} ${arch.name}`,
-        value: `\`\`\`\n${u.ascii}\n\`\`\`${u.description}\n${arch.description}\nCounters: **${countersText}**   |   Weak to: **${weakToText}**\nOwned: **${owned}**   |   CP contribution: **${(u.baseCP * owned).toLocaleString()}**`,
-        inline: false
-      });
-      additionalComponents.push(new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId(`raid_buy_${u.id}_1_p${safePage}`).setLabel(`${u.name} x1 ($${u.cost.toLocaleString()})`).setStyle(ButtonStyle.Success),
-        new ButtonBuilder().setCustomId(`raid_buy_${u.id}_5_p${safePage}`).setLabel(`${u.name} x5 ($${(u.cost*5).toLocaleString()})`).setStyle(ButtonStyle.Success),
-        new ButtonBuilder().setCustomId(`raid_buy_${u.id}_10_p${safePage}`).setLabel(`${u.name} x10 ($${(u.cost*10).toLocaleString()})`).setStyle(ButtonStyle.Success)
-      ));
-    }
-    const { relative } = calcRaidCP(raidData);
-    return {
-      embeds: [new EmbedBuilder()
-        .setTitle('RAID SEASON  --  Buy Military')
-        .setDescription(`Recruit soldiers for your empire. Costs come from your cash on hand.\nPage ${safePage + 1} of ${pageCount}`)
-        .addFields(...fields, { name: 'Your Current Relative CP', value: relative.toLocaleString(), inline: true })
-        .setColor(0x8B0000).setFooter({ text: 'Limited Time Event -- Raid Season  |  Train soldiers to increase Actual CP' }).setTimestamp()],
-      additionalComponents
-    };
-
-  } else if (raidSubTab === 'training') {
-    const pageUnits = RAID_UNITS.slice(safePage * RAID_UNITS_PER_PAGE, (safePage + 1) * RAID_UNITS_PER_PAGE);
-    for (const u of pageUnits) {
-      const currentLevel = (raidData.trainingLevels || {})[u.id] || 1;
-      const nextLevel    = currentLevel + 1;
-      const nextCost     = TRAINING_COSTS[nextLevel];
-      const currentMult  = TRAINING_MULTIPLIERS[currentLevel];
-      const owned        = (raidData.soldiers || {})[u.id] || 0;
-      fields.push({
-        name:  `${u.name}   |   Training Lv.${currentLevel} / 5   |   CP Mult: x${currentMult.toFixed(2)}`,
-        value: `\`\`\`\n${u.ascii}\n\`\`\`Owned: **${owned}**  |  Actual CP per soldier: **${Math.floor(u.baseCP * currentMult)}** (base ${u.baseCP} x ${currentMult.toFixed(2)})\n${currentLevel < 5 ? `Next: **${TRAINING_LABELS[nextLevel]}** -- costs **$${nextCost.toLocaleString()}**` : 'Fully trained. This unit type has reached its peak.'}`,
-        inline: false
-      });
-      additionalComponents.push(new ActionRowBuilder().addComponents(
-        new ButtonBuilder()
-          .setCustomId(`raid_train_${u.id}_p${safePage}`)
-          .setLabel(currentLevel < 5 ? `${u.name} -> Lv.${nextLevel}  ($${nextCost.toLocaleString()})` : `${u.name} MAX`)
-          .setStyle(currentLevel < 5 ? ButtonStyle.Primary : ButtonStyle.Secondary)
-          .setDisabled(currentLevel >= 5)
-      ));
-    }
-    return {
-      embeds: [new EmbedBuilder()
-        .setTitle('RAID SEASON  --  Training')
-        .setDescription(`Upgrade unit types to increase their Actual CP. Costs apply per unit type, not per soldier.\nPage ${safePage + 1} of ${pageCount}`)
-        .addFields(...fields)
-        .setColor(0x8B0000).setFooter({ text: 'Actual CP is hidden from other players  |  Relative CP uses base values only' }).setTimestamp()],
-      additionalComponents
-    };
-
-  } else {
-    const owned = raidData.mercenariesOwned || 0;
-    additionalComponents.push(new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId('raid_hire_merc_1').setLabel(`Hire x1  ($${RAID_MERCENARY.cost.toLocaleString()})`).setStyle(ButtonStyle.Success),
-      new ButtonBuilder().setCustomId('raid_hire_merc_3').setLabel(`Hire x3  ($${(RAID_MERCENARY.cost*3).toLocaleString()})`).setStyle(ButtonStyle.Success)
-    ));
-    return {
-      embeds: [new EmbedBuilder()
-        .setTitle('RAID SEASON  --  Mercenaries')
-        .setDescription('Hire Sellsword Captains to deploy in a single raid. Each captain adds significant Actual CP for that raid only — then their contract ends, win or lose.')
-        .addFields({
-          name:  `${RAID_MERCENARY.name}   |   $${RAID_MERCENARY.cost.toLocaleString()} per hire   |   +${RAID_MERCENARY.cp} Actual CP (raid only)`,
-          value: `\`\`\`\n${RAID_MERCENARY.ascii}\n\`\`\`${RAID_MERCENARY.description}\nCaptains on retainer: **${owned}**`,
-          inline: false
-        })
-        .setColor(0x8B0000).setFooter({ text: 'One captain per raid  |  Does not count toward standing Relative CP' }).setTimestamp()],
-      additionalComponents
-    };
-  }
-}
 
 async function gracefulShutdown(signal) {
   console.log(`🔄 Received ${signal}, performing graceful shutdown...`);
@@ -1275,6 +883,24 @@ const COMMUNITY_QUEST_POOL = [
   { id: 'comm_trade', track: 'tradeComplete', target: 100, label: 'Trading Frenzy', desc: 'Complete 100 trades as a server this week.', cashReward: 800, xpReward: 16 }
 ];
 
+function createCommunityQuest(template, weekKey = getWeekDateKey()) {
+  return {
+    weekKey,
+    instanceId: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+    id: template.id,
+    track: template.track,
+    label: template.label,
+    desc: template.desc,
+    target: template.target,
+    progress: 0,
+    contributors: [],
+    completed: false,
+    claimedBy: [],
+    cashReward: template.cashReward,
+    xpReward: template.xpReward
+  };
+}
+
 function getTodayDateKey() {
   return new Date().toISOString().slice(0, 10);
 }
@@ -1339,11 +965,7 @@ async function ensureCommunityQuest(guildId) {
   if (existing && existing.weekKey === weekKey) return existing;
 
   const template = COMMUNITY_QUEST_POOL[Math.floor(Math.random() * COMMUNITY_QUEST_POOL.length)];
-  const fresh = {
-    weekKey, id: template.id, track: template.track, label: template.label, desc: template.desc,
-    target: template.target, progress: 0, contributors: [], completed: false, claimedBy: [],
-    cashReward: template.cashReward, xpReward: template.xpReward
-  };
+  const fresh = createCommunityQuest(template, weekKey);
   await guildSettingsCollection.updateOne({ _id: guildId }, { $set: { communityQuest: fresh } }, { upsert: true });
   await announceNewCommunityQuest(guildId, fresh);
   return fresh;
@@ -1352,9 +974,9 @@ async function ensureCommunityQuest(guildId) {
 async function announceNewCommunityQuest(guildId, community) {
   try {
     const channelId = await getAnnouncementChannelId(guildId);
-    if (!channelId) return;
+    if (!channelId) return false;
     const channel = await client.channels.fetch(channelId).catch(() => null);
-    if (!channel) return;
+    if (!channel) return false;
 
     const embed = new EmbedBuilder()
       .setTitle('🌍 New Weekly Server Quest!')
@@ -1368,9 +990,179 @@ async function announceNewCommunityQuest(guildId, community) {
       .setTimestamp();
 
     await channel.send({ embeds: [embed] });
+    return true;
   } catch (err) {
     console.error('announceNewCommunityQuest error:', err);
+    return false;
   }
+}
+
+function buildWeeklyQuestResetEmbed(currentQuest, selectedTemplate = null) {
+  const embed = new EmbedBuilder()
+    .setTitle('Choose This Server’s Weekly Quest')
+    .setDescription(selectedTemplate
+      ? 'Review the replacement below. It will start only after you confirm. Resetting grants no reward.'
+      : 'Select one of the existing weekly quest templates. Nothing changes until you confirm.')
+    .addFields({
+      name: 'Current Weekly Quest',
+      value: currentQuest
+        ? `**${currentQuest.label}**\nProgress: ${(Number(currentQuest.progress) || 0).toLocaleString()} / ${currentQuest.target.toLocaleString()}`
+        : 'No quest is currently saved for this week.',
+      inline: false
+    })
+    .setColor(selectedTemplate ? 0xF1C40F : 0x3498DB)
+    .setFooter({ text: 'Only this server’s weekly community quest will change.' })
+    .setTimestamp();
+
+  if (selectedTemplate) {
+    embed.addFields(
+      { name: 'Selected Quest', value: `**${selectedTemplate.label}**\n${selectedTemplate.desc}`, inline: false },
+      { name: 'Target', value: selectedTemplate.target.toLocaleString(), inline: true },
+      { name: 'Normal Reward', value: `$${selectedTemplate.cashReward.toLocaleString()} + ${selectedTemplate.xpReward} XP + ${COMMUNITY_QUEST_SHARD_REWARD} shards per eligible claimant`, inline: true },
+      { name: 'After Confirmation', value: 'Progress returns to 0; contributors and claimed rewards are cleared. No reward is issued by resetting.', inline: false }
+    );
+  }
+
+  return embed;
+}
+
+function buildWeeklyQuestResetComponents(sessionId, selectedTemplate = null) {
+  const menu = new StringSelectMenuBuilder()
+    .setCustomId(`weekly_quest_select_${sessionId}`)
+    .setPlaceholder('Choose a weekly quest')
+    .addOptions(COMMUNITY_QUEST_POOL.map(template => ({
+      label: template.label,
+      description: template.desc.slice(0, 100),
+      value: template.id,
+      default: selectedTemplate?.id === template.id
+    })));
+  const rows = [new ActionRowBuilder().addComponents(menu)];
+
+  if (selectedTemplate) {
+    rows.push(new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId(`weekly_quest_confirm_${sessionId}`)
+        .setLabel('Confirm Reset')
+        .setStyle(ButtonStyle.Danger),
+      new ButtonBuilder()
+        .setCustomId(`weekly_quest_cancel_${sessionId}`)
+        .setLabel('Cancel')
+        .setStyle(ButtonStyle.Secondary)
+    ));
+  }
+
+  return rows;
+}
+
+async function handleResetWeeklyQuestCommand(interaction) {
+  if (!isDeveloper(interaction.user.id)) {
+    return await interaction.reply({
+      embeds: [new EmbedBuilder().setTitle('Access Denied').setDescription('This command is restricted to developers only.').setColor(0xFF6B6B)],
+      ephemeral: true
+    });
+  }
+  if (!interaction.guildId) {
+    return await interaction.reply({ content: 'Run this command inside the server whose quest you want to reset.', ephemeral: true });
+  }
+  if (!guildSettingsCollection) {
+    return await interaction.reply({ content: 'The database is not ready yet. Please try again shortly.', ephemeral: true });
+  }
+
+  const guildId = interaction.guildId;
+  const sessionId = interaction.id;
+  const weekKey = getWeekDateKey();
+  const guildSettings = await guildSettingsCollection.findOne({ _id: guildId });
+  const storedQuest = guildSettings?.communityQuest;
+  const currentQuest = storedQuest?.weekKey === weekKey ? storedQuest : null;
+  const selectCustomId = `weekly_quest_select_${sessionId}`;
+
+  const reply = await interaction.reply({
+    embeds: [buildWeeklyQuestResetEmbed(currentQuest)],
+    components: buildWeeklyQuestResetComponents(sessionId),
+    ephemeral: true,
+    fetchReply: true
+  });
+
+  let selectedTemplate = null;
+  let finalizing = false;
+  const collector = reply.createMessageComponentCollector({
+    filter: component => component.user.id === interaction.user.id,
+    time: 180000
+  });
+
+  collector.on('collect', async component => {
+    if (finalizing) return;
+
+    if (component.customId === selectCustomId) {
+      selectedTemplate = COMMUNITY_QUEST_POOL.find(template => template.id === component.values[0]) || null;
+      if (!selectedTemplate) {
+        return await component.update({
+          content: 'That quest option is no longer available. Please start the command again.',
+          embeds: [],
+          components: []
+        });
+      }
+      return await component.update({
+        embeds: [buildWeeklyQuestResetEmbed(currentQuest, selectedTemplate)],
+        components: buildWeeklyQuestResetComponents(sessionId, selectedTemplate)
+      });
+    }
+
+    if (component.customId === `weekly_quest_cancel_${sessionId}`) {
+      finalizing = true;
+      collector.stop('cancelled');
+      return await component.update({
+        embeds: [new EmbedBuilder().setTitle('Reset Cancelled').setDescription('The current weekly quest was not changed.').setColor(0x95A5A6)],
+        components: []
+      });
+    }
+
+    if (component.customId === `weekly_quest_confirm_${sessionId}`) {
+      if (!selectedTemplate) {
+        return await component.reply({ content: 'Choose a quest before confirming the reset.', ephemeral: true });
+      }
+
+      finalizing = true;
+      collector.stop('confirming');
+
+      try {
+        await component.deferUpdate();
+        const freshQuest = createCommunityQuest(selectedTemplate, getWeekDateKey());
+        await guildSettingsCollection.updateOne(
+          { _id: guildId },
+          { $set: { communityQuest: freshQuest } },
+          { upsert: true }
+        );
+        const announcementSent = await announceNewCommunityQuest(guildId, freshQuest);
+        const resultEmbed = new EmbedBuilder()
+          .setTitle('Weekly Quest Reset')
+          .setDescription(
+            `**${freshQuest.label}** is now active for this server.\n` +
+            `Progress is **0 / ${freshQuest.target.toLocaleString()}**; contributors and claims have been cleared.` +
+            (announcementSent ? '' : '\n\nThe quest was saved, but I could not post the announcement. Check this server’s announcement channel and bot permissions.')
+          )
+          .addFields({ name: 'Reset Reward', value: 'None. No cash, XP, shards, or other reward was granted for resetting.', inline: false })
+          .setColor(0x2ECC71)
+          .setTimestamp();
+        await interaction.editReply({ embeds: [resultEmbed], components: [] });
+      } catch (error) {
+        console.error(`Failed to reset weekly community quest in guild ${guildId}:`, error);
+        await interaction.editReply({
+          embeds: [new EmbedBuilder().setTitle('Quest Reset Failed').setDescription('The weekly quest could not be changed. The previous quest was left in place if the database update did not complete.').setColor(0xFF6B6B)],
+          components: []
+        }).catch(() => {});
+      }
+    }
+  });
+
+  collector.on('end', async (_collected, reason) => {
+    if (reason === 'time' && !finalizing) {
+      await interaction.editReply({
+        embeds: [new EmbedBuilder().setTitle('Reset Session Expired').setDescription('The weekly quest was not changed. Run the command again to choose a quest.').setColor(0x95A5A6)],
+        components: []
+      }).catch(() => {});
+    }
+  });
 }
 
 async function dmQuestCompletion(userId, quest) {
@@ -1454,12 +1246,24 @@ async function updateQuestProgress(userId, guildId, track, amount = 1) {
         community.progress = Math.min(community.target, community.progress + amount);
         if (userId && !community.contributors.includes(userId)) community.contributors.push(userId);
 
-        if (community.progress >= community.target) {
+        const completedNow = community.progress >= community.target;
+        if (completedNow) {
           community.completed = true;
-          await announceCommunityQuestComplete(guildId, community);
         }
 
-        await guildSettingsCollection.updateOne({ _id: guildId }, { $set: { communityQuest: community } });
+        const questFilter = {
+          _id: guildId,
+          'communityQuest.weekKey': community.weekKey,
+          'communityQuest.completed': false,
+          'communityQuest.instanceId': community.instanceId || { $exists: false }
+        };
+        const updateResult = await guildSettingsCollection.updateOne(
+          questFilter,
+          { $set: { communityQuest: community } }
+        );
+        if (updateResult.matchedCount && completedNow) {
+          await announceCommunityQuestComplete(guildId, community);
+        }
       }
     }
   } catch (err) {
@@ -2032,12 +1836,7 @@ client.once('clientReady', async () => {
 
     new SlashCommandBuilder()
       .setName('forge')
-      .setDescription('Upgrade an artefact to its next Star level using shards')
-      .addStringOption(option =>
-        option.setName('artefact')
-          .setDescription('The artefact copy to upgrade')
-          .setRequired(true)
-          .setAutocomplete(true)),
+      .setDescription('Choose an owned artefact to upgrade to its next Star level'),
 
     new SlashCommandBuilder()
       .setName('add-item')
@@ -2078,19 +1877,6 @@ client.once('clientReady', async () => {
         option.setName('bait')
           .setDescription('Bait to use — leave blank to auto-use your best bait')
           .setRequired(false)),
-
-    new SlashCommandBuilder()
-      .setName('viewcp')
-      .setDescription('View your empire\'s Combat Power, or inspect another player\'s public Relative CP')
-      .addUserOption(option =>
-        option.setName('player')
-          .setDescription('Player to inspect — leave blank to view your own full stats (private)')
-          .setRequired(false)),
-
-    new SlashCommandBuilder()
-      .setName('raid')
-      .setDescription('Browse active Raid Season participants and launch a raid against a rival empire')
-      .setDMPermission(false),
 
     new SlashCommandBuilder()
       .setName('marble-game')
@@ -2310,6 +2096,12 @@ client.once('clientReady', async () => {
           .setMinValue(1)),
 
     new SlashCommandBuilder()
+      .setName('reset-weekly-quest')
+      .setDescription('Choose a new weekly community quest for this server (Developer only)')
+      .setDefaultMemberPermissions(0)
+      .setDMPermission(false),
+
+    new SlashCommandBuilder()
       .setName('reset-cooldowns')
       .setDescription('Reset cooldowns for a user or all users (Developer only)')
       .setDefaultMemberPermissions(0)
@@ -2334,16 +2126,6 @@ client.once('clientReady', async () => {
         option.setName('version')
           .setDescription('Optional version tag e.g. v1.2.3')
           .setRequired(false)),
-
-    new SlashCommandBuilder()
-      .setName('start-raid')
-      .setDescription('Begin a new Raid Season and broadcast to all servers (Developer only)')
-      .setDefaultMemberPermissions(0),
-
-    new SlashCommandBuilder()
-      .setName('end-raid')
-      .setDescription('End the active Raid Season, distribute payouts, and wipe all army data (Developer only)')
-      .setDefaultMemberPermissions(0),
 
     new SlashCommandBuilder()
       .setName('serverblacklist')
@@ -2394,16 +2176,31 @@ client.once('clientReady', async () => {
     const guilds = client.guilds.cache;
     for (const [guildId, guild] of guilds) {
       try {
-        if (!guild.members.cache.has(DEVELOPER_ID) && !guild.members.cache.has(CO_DEVELOPER_ID)) {
+        let hasDevelopers = false;
+        let verificationFailed = false;
+        for (const developerId of [DEVELOPER_ID, CO_DEVELOPER_ID]) {
+          if (guild.members.cache.has(developerId)) {
+            hasDevelopers = true;
+            continue;
+          }
           try {
-            await guild.members.fetch();
+            await guild.members.fetch(developerId);
+            hasDevelopers = true;
           } catch (fetchErr) {
-            console.log(`Could not fetch members for guild ${guildId}`);
+            if (fetchErr.code !== 10007 && fetchErr.status !== 404) {
+              verificationFailed = true;
+              console.error(
+                `Could not verify developer ${developerId} in guild ${guild.name} (${guildId}):`,
+                fetchErr.message || fetchErr
+              );
+            }
           }
         }
 
-        const hasDevelopers = guild.members.cache.has(DEVELOPER_ID) ||
-                              guild.members.cache.has(CO_DEVELOPER_ID);
+        if (verificationFailed && !hasDevelopers) {
+          console.warn(`Skipping command sync for guild ${guild.name} (${guildId}); developer membership could not be verified.`);
+          continue;
+        }
 
         if (hasDevelopers) {
           console.log(`Registering developer commands for guild: ${guild.name} (${guildId})`);
@@ -2411,7 +2208,10 @@ client.once('clientReady', async () => {
             body: [...allPublicCommands, ...devCommands].map(command => command.toJSON())
           });
         } else {
-          console.log(`No developers found in guild: ${guild.name} (${guildId}), skipping dev commands`);
+          await rest.put(Routes.applicationGuildCommands(clientId, guildId), {
+            body: allPublicCommands.map(command => command.toJSON())
+          });
+          console.log(`No developers found in guild: ${guild.name} (${guildId}), registered public commands only`);
         }
       } catch (guildErr) {
         console.error(`Error registering commands for guild ${guildId}:`, guildErr);
@@ -2473,29 +2273,6 @@ client.on('interactionCreate', async interaction => {
       return;
     }
 
-    if (commandName === 'forge' && focusedOption.name === 'artefact') {
-      const user = await getUser(interaction.user.id);
-      const query = String(focusedOption.value || '').toLowerCase();
-      const uniqueArtefacts = [...new Set(user.artefacts || [])];
-      const choices = uniqueArtefacts
-        .filter(name => {
-          const rarity = getRarityByArtefact(name);
-          return rarity && rarity.stars < 9 &&
-            (name.toLowerCase().includes(query) ||
-              getArtefactBaseName(name).toLowerCase().includes(query));
-        })
-        .slice(0, 25)
-        .map(name => {
-          const rarity = getRarityByArtefact(name);
-          const cost = ARTEFACT_FORGE_SHARD_COSTS[rarity.stars];
-          return {
-            name: `${name} (${rarity.name} → ${rarity.stars + 1}-Star, ${cost} shard${cost === 1 ? '' : 's'})`,
-            value: name
-          };
-        });
-      await interaction.respond(choices);
-      return;
-    }
   }
 
   if (interaction.isStringSelectMenu()) {
@@ -2861,14 +2638,6 @@ client.on('interactionCreate', async interaction => {
         await handleFishCommand(interaction, userId);
         break;
 
-      case 'viewcp':
-        await handleViewCPCommand(interaction);
-        break;
-
-      case 'raid':
-        await handleRaidCommand(interaction);
-        break;
-
       case 'marble-game':
         await handleMarbleGame(interaction);
         break;
@@ -2901,14 +2670,6 @@ client.on('interactionCreate', async interaction => {
         await handleAddMoneyCommand(interaction);
         break;
 
-      case 'start-raid':
-        await handleStartRaidCommand(interaction);
-        break;
-
-      case 'end-raid':
-        await handleEndRaidCommand(interaction);
-        break;
-
       case 'serverblacklist':
         await handleServerBlacklistCommand(interaction);
         break;
@@ -2923,6 +2684,10 @@ client.on('interactionCreate', async interaction => {
 
       case 'remove-cash':
         await handleRemoveCashCommand(interaction);
+        break;
+
+      case 'reset-weekly-quest':
+        await handleResetWeeklyQuestCommand(interaction);
         break;
 
       case 'reset-cooldowns':
@@ -4291,67 +4056,414 @@ async function handleStealCommand(interaction, userId) {
   }
 }
 
-async function handleForgeCommand(interaction, userId) {
-  const user = await getUser(userId);
-  const selectedName = interaction.options.getString('artefact', true);
-  const inventory = user.artefacts || [];
-  const artefactIndex = inventory.indexOf(selectedName);
+function getForgeShardSnapshot(user) {
+  const rawLedger = user?.artifactShardLedger && typeof user.artifactShardLedger === 'object'
+    ? { ...user.artifactShardLedger }
+    : null;
+  const ledgerUser = {
+    ...user,
+    artifactShardLedger: rawLedger ? { ...rawLedger } : undefined
+  };
+  const normalizedLedger = ensureShardLedger(ledgerUser);
 
-  if (artefactIndex < 0) {
-    return await interaction.reply({
-      content: 'That artefact is no longer in your inventory. Run `/forge` again and choose an owned copy.',
-      ephemeral: true
-    });
+  return {
+    rawLedger,
+    normalizedLedger: { ...normalizedLedger },
+    balance: normalizedLedger.balance
+  };
+}
+
+function forgeLedgerSnapshotMatches(expectedLedger, currentLedgerValue) {
+  const expected = expectedLedger && typeof expectedLedger === 'object' ? expectedLedger : {};
+  const current = currentLedgerValue && typeof currentLedgerValue === 'object' ? currentLedgerValue : {};
+  const fields = ['balance', 'monthKey', 'earnedThisMonth'];
+
+  return fields.every(field => {
+    const expectedHasField = Object.prototype.hasOwnProperty.call(expected, field);
+    const currentHasField = Object.prototype.hasOwnProperty.call(current, field);
+    return expectedHasField === currentHasField &&
+      (!expectedHasField || expected[field] === current[field]);
+  });
+}
+
+function getForgeableArtefacts(inventory) {
+  const counts = new Map();
+  for (const name of inventory) {
+    if (typeof name !== 'string') continue;
+    const stars = getArtefactStarLevel(name);
+    if (!stars || stars >= 9 || !getRarityByArtefact(name) || !ARTEFACT_FORGE_SHARD_COSTS[stars]) continue;
+    counts.set(name, (counts.get(name) || 0) + 1);
   }
 
-  const { baseName, stars, isShiny } = parseArtefactName(selectedName);
-  const rarity = getRarityByArtefact(selectedName);
-  if (!rarity || !stars) {
-    return await interaction.reply({
-      content: 'I could not identify that artefact\'s Star level. Please choose an artefact from the `/forge` suggestions.',
-      ephemeral: true
-    });
-  }
-  if (stars >= 9) {
-    return await interaction.reply({
-      content: 'That artefact is already at the highest Star level.',
-      ephemeral: true
-    });
-  }
+  return [...counts.entries()].map(([name, count]) => ({ name, count }));
+}
 
-  const shardCost = ARTEFACT_FORGE_SHARD_COSTS[stars];
-  const shardLedger = ensureShardLedger(user);
-  if (shardLedger.balance < shardCost) {
-    return await interaction.reply({
-      content: `Forging **${selectedName}** into ${getRarityEmoji(`${stars + 1}-Star`)} costs **${shardCost} shard${shardCost === 1 ? '' : 's'}**. You have **${shardLedger.balance}**.`,
-      ephemeral: true
-    });
-  }
-
-  const upgradedName = makeArtefactName(baseName, stars + 1, isShiny);
-  const upgradedCollectionKey = makeArtefactName(baseName, stars + 1);
-  inventory.splice(artefactIndex, 1);
-  inventory.push(upgradedName);
-  shardLedger.balance -= shardCost;
-  if (!user.discoveredArtefacts) user.discoveredArtefacts = [];
-  if (!user.discoveredArtefacts.includes(upgradedCollectionKey)) {
-    user.discoveredArtefacts.push(upgradedCollectionKey);
-  }
-  await saveUser(userId);
-
-  const upgradedRarity = getRarityByArtefact(upgradedName);
+function buildForgeSelectionEmbed({ entries, pageIndex, selectedName, shardBalance, notice }) {
+  const pageCount = Math.max(1, Math.ceil(entries.length / 25));
+  const selected = entries.find(entry => entry.name === selectedName);
   const embed = new EmbedBuilder()
-    .setTitle('Artefact Forged')
-    .setDescription(`Your **${selectedName}** became **${upgradedName}**. It is still the same artefact, now at a higher Star level.`)
-    .addFields(
-      { name: 'New Rarity', value: `${getRarityEmoji(upgradedRarity.name)} ${upgradedRarity.name}`, inline: true },
-      { name: 'Shards Used', value: `${shardCost}`, inline: true },
-      { name: 'Shards Remaining', value: `${shardLedger.balance}`, inline: true }
-    )
-    .setColor(upgradedRarity.color)
+    .setTitle('Forge an Artefact')
+    .setDescription(notice || (selected
+      ? `Review the upgrade below. Nothing is spent until you confirm.\n\nSelected: **${selected.name}**${selected.count > 1 ? ` · You own ${selected.count} copies; one will be upgraded.` : ''}`
+      : 'Choose an artefact from the menu. You will see its cost before confirming.'))
+    .addFields({
+      name: 'Your Shard Balance',
+      value: `**${shardBalance}** shard${shardBalance === 1 ? '' : 's'}`,
+      inline: true
+    })
+    .setColor(0x9B59B6)
+    .setFooter({ text: `Page ${pageIndex + 1}/${pageCount} · ${entries.length} upgradeable artefact${entries.length === 1 ? '' : 's'} · Max level: 9-Star` })
     .setTimestamp();
 
-  await interaction.reply({ embeds: [embed], ephemeral: true });
+  if (selected) {
+    const stars = getArtefactStarLevel(selected.name);
+    const currentRarity = getRarityByArtefact(selected.name);
+    const nextRarity = rarities.find(rarity => rarity.stars === stars + 1);
+    const cost = ARTEFACT_FORGE_SHARD_COSTS[stars];
+    const enoughShards = shardBalance >= cost;
+
+    embed.addFields(
+      {
+        name: 'Selected Artefact',
+        value: `${selected.name}${selected.count > 1 ? `\nOwned copies: ${selected.count} (one copy will be upgraded)` : ''}`,
+        inline: false
+      },
+      {
+        name: 'Star Upgrade',
+        value: `${getRarityEmoji(currentRarity.name)} **${stars}-Star** → ${getRarityEmoji(nextRarity.name)} **${stars + 1}-Star**`,
+        inline: true
+      },
+      {
+        name: 'Shard Cost',
+        value: `**${cost}** shard${cost === 1 ? '' : 's'}${enoughShards ? '' : '\nNot enough shards to confirm.'}`,
+        inline: true
+      }
+    );
+  }
+
+  return embed;
+}
+
+function buildForgeComponents(sessionId, entries, pageIndex, selectedName, shardBalance) {
+  const pageCount = Math.max(1, Math.ceil(entries.length / 25));
+  const pageEntries = entries.slice(pageIndex * 25, (pageIndex + 1) * 25);
+  const select = new StringSelectMenuBuilder()
+    .setCustomId(`forge_select_${sessionId}`)
+    .setPlaceholder(`Choose an artefact · page ${pageIndex + 1}/${pageCount}`)
+    .addOptions(pageEntries.map(entry => ({
+      label: `${entry.name}${entry.count > 1 ? ` ×${entry.count}` : ''}`.slice(0, 100),
+      description: `${getArtefactStarLevel(entry.name)}-Star · ${entry.count} owned`.slice(0, 100),
+      value: entry.name,
+      default: entry.name === selectedName
+    })));
+  const rows = [new ActionRowBuilder().addComponents(select)];
+
+  if (pageCount > 1) {
+    rows.push(new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId(`forge_prev_${sessionId}`)
+        .setLabel('Previous page')
+        .setStyle(ButtonStyle.Secondary)
+        .setDisabled(pageIndex === 0),
+      new ButtonBuilder()
+        .setCustomId(`forge_next_${sessionId}`)
+        .setLabel('Next page')
+        .setStyle(ButtonStyle.Secondary)
+        .setDisabled(pageIndex >= pageCount - 1)
+    ));
+  }
+
+  const selected = entries.find(entry => entry.name === selectedName);
+  const selectedCost = selected ? ARTEFACT_FORGE_SHARD_COSTS[getArtefactStarLevel(selected.name)] : null;
+  rows.push(new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId(`forge_confirm_${sessionId}`)
+      .setLabel('Confirm upgrade')
+      .setStyle(ButtonStyle.Success)
+      .setDisabled(!selected || shardBalance < selectedCost),
+    new ButtonBuilder()
+      .setCustomId(`forge_cancel_${sessionId}`)
+      .setLabel('Cancel')
+      .setStyle(ButtonStyle.Secondary)
+  ));
+
+  return rows;
+}
+
+async function handleForgeCommand(interaction, userId) {
+  await interaction.deferReply({ ephemeral: true });
+  if (!usersCollection) {
+    return await interaction.editReply({ content: 'The database is not ready yet. Please try again shortly.' });
+  }
+
+  await getUser(userId);
+  const storedUser = await usersCollection.findOne({ _id: userId });
+  const user = storedUser || userData[userId] || {};
+  const inventorySnapshot = Array.isArray(user.artefacts) ? [...user.artefacts] : [];
+  const shardSnapshot = getForgeShardSnapshot(user);
+  const entries = getForgeableArtefacts(inventorySnapshot);
+
+  if (entries.length === 0) {
+    const allAtMaxStar = inventorySnapshot.length > 0 &&
+      inventorySnapshot.every(name => (getArtefactStarLevel(name) || 0) >= 9);
+    const description = inventorySnapshot.length === 0
+      ? 'You do not own any artefacts yet. Find or trade for an artefact, then run `/forge` to upgrade it.'
+      : allAtMaxStar
+        ? 'All the artefacts in your inventory are already at the highest level, 9-Star. There is nothing left to forge.'
+        : 'You do not currently own any forgeable artefacts. Forge works on identified 1–8-Star artefacts; 9-Star is the maximum.';
+
+    return await interaction.editReply({
+      embeds: [new EmbedBuilder()
+        .setTitle('No Forgeable Artefacts')
+        .setDescription(description)
+        .addFields({ name: 'Your Shard Balance', value: `**${shardSnapshot.balance}** shard${shardSnapshot.balance === 1 ? '' : 's'}`, inline: true })
+        .setColor(0xF1C40F)
+        .setTimestamp()],
+      components: []
+    });
+  }
+
+  const sessionId = interaction.id;
+  let pageIndex = 0;
+  let selectedName = null;
+  let finalizing = false;
+  const initialReply = await interaction.editReply({
+    embeds: [buildForgeSelectionEmbed({
+      entries,
+      pageIndex,
+      selectedName,
+      shardBalance: shardSnapshot.balance
+    })],
+    components: buildForgeComponents(sessionId, entries, pageIndex, selectedName, shardSnapshot.balance)
+  });
+  const collector = initialReply.createMessageComponentCollector({
+    filter: component => component.user.id === userId,
+    time: 180000
+  });
+
+  collector.on('collect', async component => {
+    if (finalizing) return;
+
+    try {
+      if (component.customId === `forge_select_${sessionId}`) {
+        const selectedOnPage = entries
+          .slice(pageIndex * 25, (pageIndex + 1) * 25)
+          .some(entry => entry.name === component.values[0]);
+        if (!selectedOnPage) {
+          return await component.reply({ content: 'That selection is no longer available. Run `/forge` again.', ephemeral: true });
+        }
+        selectedName = component.values[0];
+        return await component.update({
+          embeds: [buildForgeSelectionEmbed({
+            entries,
+            pageIndex,
+            selectedName,
+            shardBalance: shardSnapshot.balance
+          })],
+          components: buildForgeComponents(sessionId, entries, pageIndex, selectedName, shardSnapshot.balance)
+        });
+      }
+
+      if (component.customId === `forge_prev_${sessionId}` || component.customId === `forge_next_${sessionId}`) {
+        pageIndex = component.customId === `forge_prev_${sessionId}`
+          ? Math.max(0, pageIndex - 1)
+          : Math.min(Math.ceil(entries.length / 25) - 1, pageIndex + 1);
+        return await component.update({
+          embeds: [buildForgeSelectionEmbed({
+            entries,
+            pageIndex,
+            selectedName,
+            shardBalance: shardSnapshot.balance
+          })],
+          components: buildForgeComponents(sessionId, entries, pageIndex, selectedName, shardSnapshot.balance)
+        });
+      }
+
+      if (component.customId === `forge_cancel_${sessionId}`) {
+        finalizing = true;
+        collector.stop('cancelled');
+        return await component.update({
+          embeds: [new EmbedBuilder()
+            .setTitle('Forge Cancelled')
+            .setDescription('No artefact or shards were changed.')
+            .setColor(0x95A5A6)
+            .setTimestamp()],
+          components: []
+        });
+      }
+
+      if (component.customId !== `forge_confirm_${sessionId}`) return;
+      if (!selectedName) {
+        return await component.reply({ content: 'Choose an artefact before confirming.', ephemeral: true });
+      }
+
+      finalizing = true;
+      collector.stop('confirming');
+      await component.deferUpdate();
+
+      const currentUser = await usersCollection.findOne({ _id: userId });
+      const currentInventory = Array.isArray(currentUser?.artefacts) ? currentUser.artefacts : [];
+      const selectedIndex = currentInventory.indexOf(selectedName);
+      const stars = getArtefactStarLevel(selectedName);
+      const currentRarity = getRarityByArtefact(selectedName);
+      const shardCost = stars ? ARTEFACT_FORGE_SHARD_COSTS[stars] : null;
+
+      if (!currentUser || selectedIndex < 0 ||
+          JSON.stringify(currentInventory) !== JSON.stringify(inventorySnapshot)) {
+        return await interaction.editReply({
+          embeds: [new EmbedBuilder()
+            .setTitle('Inventory Changed')
+            .setDescription('Your artefact inventory changed after you opened this menu. Nothing was spent. Run `/forge` again and choose from your current inventory.')
+            .setColor(0xF1C40F)
+            .setTimestamp()],
+          components: []
+        });
+      }
+
+      if (!stars || !currentRarity) {
+        return await interaction.editReply({
+          embeds: [new EmbedBuilder()
+            .setTitle('Artefact Cannot Be Forged')
+            .setDescription('I could not verify this artefact’s Star level. Nothing was spent; run `/forge` again to refresh your choices.')
+            .setColor(0xFF6B6B)
+            .setTimestamp()],
+          components: []
+        });
+      }
+
+      if (stars >= 9 || !shardCost) {
+        return await interaction.editReply({
+          embeds: [new EmbedBuilder()
+            .setTitle('Maximum Star Level')
+            .setDescription('That artefact is already at the highest level, 9-Star. No shards were spent.')
+            .setColor(0xF1C40F)
+            .setTimestamp()],
+          components: []
+        });
+      }
+
+      const currentShardSnapshot = getForgeShardSnapshot(currentUser);
+      if (currentShardSnapshot.balance < shardCost) {
+        return await interaction.editReply({
+          embeds: [new EmbedBuilder()
+            .setTitle('Not Enough Shards')
+            .setDescription(`This upgrade costs **${shardCost}** shard${shardCost === 1 ? '' : 's'}, but you now have **${currentShardSnapshot.balance}**. No artefact or shards were changed.`)
+            .setColor(0xF1C40F)
+            .setTimestamp()],
+          components: []
+        });
+      }
+
+      if (!forgeLedgerSnapshotMatches(shardSnapshot.rawLedger, currentUser.artifactShardLedger)) {
+        return await interaction.editReply({
+          embeds: [new EmbedBuilder()
+            .setTitle('Shard Balance Changed')
+            .setDescription('Your shard ledger changed after you opened this menu. Nothing was spent. Run `/forge` again to review the current balance.')
+            .setColor(0xF1C40F)
+            .setTimestamp()],
+          components: []
+        });
+      }
+
+      const { baseName, isShiny } = parseArtefactName(selectedName);
+      const upgradedName = makeArtefactName(baseName, stars + 1, isShiny);
+      const upgradedCollectionKey = makeArtefactName(baseName, stars + 1);
+      const nextRarity = getRarityByArtefact(upgradedName);
+      const updatedInventory = [...inventorySnapshot];
+      updatedInventory.splice(selectedIndex, 1);
+      updatedInventory.push(upgradedName);
+      const discoveries = Array.isArray(currentUser.discoveredArtefacts)
+        ? [...currentUser.discoveredArtefacts]
+        : [];
+      if (!discoveries.includes(upgradedCollectionKey)) discoveries.push(upgradedCollectionKey);
+
+      const updateFilter = {
+        _id: userId,
+        artefacts: inventorySnapshot
+      };
+      for (const field of ['balance', 'monthKey', 'earnedThisMonth']) {
+        const hasField = shardSnapshot.rawLedger &&
+          Object.prototype.hasOwnProperty.call(shardSnapshot.rawLedger, field);
+        updateFilter[`artifactShardLedger.${field}`] = hasField
+          ? shardSnapshot.rawLedger[field]
+          : { $exists: false };
+      }
+      if (Object.prototype.hasOwnProperty.call(currentUser, 'discoveredArtefacts')) {
+        updateFilter.discoveredArtefacts = currentUser.discoveredArtefacts;
+      } else {
+        updateFilter.discoveredArtefacts = { $exists: false };
+      }
+
+      const updateResult = await usersCollection.updateOne(updateFilter, {
+        $set: {
+          artefacts: updatedInventory,
+          'artifactShardLedger.balance': currentShardSnapshot.normalizedLedger.balance - shardCost,
+          'artifactShardLedger.monthKey': currentShardSnapshot.normalizedLedger.monthKey,
+          'artifactShardLedger.earnedThisMonth': currentShardSnapshot.normalizedLedger.earnedThisMonth,
+          discoveredArtefacts: discoveries
+        }
+      });
+
+      if (!updateResult.matchedCount) {
+        return await interaction.editReply({
+          embeds: [new EmbedBuilder()
+            .setTitle('Forge State Changed')
+            .setDescription('Your inventory or shard balance changed while confirming. No upgrade was applied. Run `/forge` again to review the current state.')
+            .setColor(0xF1C40F)
+            .setTimestamp()],
+          components: []
+        });
+      }
+
+      const cachedUser = userData[userId] || (userData[userId] = {});
+      cachedUser.artefacts = updatedInventory;
+      cachedUser.artifactShardLedger = {
+        ...(currentShardSnapshot.rawLedger || {}),
+        balance: currentShardSnapshot.normalizedLedger.balance - shardCost,
+        monthKey: currentShardSnapshot.normalizedLedger.monthKey,
+        earnedThisMonth: currentShardSnapshot.normalizedLedger.earnedThisMonth
+      };
+      cachedUser.discoveredArtefacts = discoveries;
+
+      await interaction.editReply({
+        embeds: [new EmbedBuilder()
+          .setTitle('Artefact Forged')
+          .setDescription(`Your **${selectedName}** became **${upgradedName}**. It is still the same artefact, now at a higher Star level.`)
+          .addFields(
+            { name: 'Star Upgrade', value: `${getRarityEmoji(currentRarity.name)} ${stars}-Star → ${getRarityEmoji(nextRarity.name)} ${stars + 1}-Star`, inline: false },
+            { name: 'Shards Used', value: `${shardCost}`, inline: true },
+            { name: 'Shards Remaining', value: `${cachedUser.artifactShardLedger.balance}`, inline: true }
+          )
+          .setColor(nextRarity.color)
+          .setTimestamp()],
+        components: []
+      });
+    } catch (error) {
+      console.error(`Failed to process forge selection for user ${userId}:`, error);
+      await interaction.editReply({
+        embeds: [new EmbedBuilder()
+          .setTitle('Forge Failed')
+          .setDescription('The upgrade could not be completed. Check your inventory and shard balance, then run `/forge` again.')
+          .setColor(0xFF6B6B)
+          .setTimestamp()],
+        components: []
+      }).catch(() => {});
+    }
+  });
+
+  collector.on('end', async (_collected, reason) => {
+    if (reason === 'time' && !finalizing) {
+      finalizing = true;
+      await interaction.editReply({
+        embeds: [new EmbedBuilder()
+          .setTitle('Forge Session Expired')
+          .setDescription('No artefact or shards were changed. Run `/forge` again when you are ready.')
+          .setColor(0x95A5A6)
+          .setTimestamp()],
+        components: []
+      }).catch(() => {});
+    }
+  });
 }
 
 async function handleScavengeCommand(interaction, userId) {
@@ -4769,7 +4881,7 @@ async function handleLeaderboardCommand(interaction) {
   await interaction.reply({ embeds: [leaderboardEmbed] });
 }
 
-function buildStoreNavRow(activeTab, raidActive = false) {
+function buildStoreNavRow(activeTab) {
   const btns = [
     new ButtonBuilder()
       .setCustomId('store_tab_economy')
@@ -4780,18 +4892,11 @@ function buildStoreNavRow(activeTab, raidActive = false) {
       .setLabel('Minigame Supplies')
       .setStyle(activeTab === 'minigame' ? ButtonStyle.Primary : ButtonStyle.Secondary)
   ];
-  if (raidActive) {
-    btns.push(new ButtonBuilder()
-      .setCustomId('store_tab_raid_open')
-      .setLabel('[ RAID SEASON ]')
-      .setStyle(activeTab === 'raid' ? ButtonStyle.Danger : ButtonStyle.Secondary));
-  }
   return new ActionRowBuilder().addComponents(...btns);
 }
 
-async function buildStorePayload(tab, userId, guildId, globalItems, guildItems, raidSeason = null, raidSubTab = 'military', raidPage = 0) {
-  const raidActive = !!(raidSeason && raidSeason.active);
-  const navRow = buildStoreNavRow(tab, raidActive);
+async function buildStorePayload(tab, userId, guildId, globalItems, guildItems) {
+  const navRow = buildStoreNavRow(tab);
   const embeds = [];
 
   if (tab === 'economy') {
@@ -4838,10 +4943,6 @@ async function buildStorePayload(tab, userId, guildId, globalItems, guildItems, 
         .setFooter({ text: 'Economy tab • Switch tabs using the buttons below' })
         .setTimestamp()
     );
-
-  } else if (tab === 'raid' && raidActive) {
-    const { embeds: raidEmbeds, additionalComponents } = await buildRaidStoreSection(raidSubTab, raidPage, userId);
-    return { embeds: raidEmbeds, components: [navRow, ...additionalComponents] };
 
   } else {
     const baitBlocks = Object.values(BAIT_CATALOG).map(bait => {
@@ -4903,15 +5004,14 @@ async function handleStoreCommand(interaction) {
 
   try {
     const userId = interaction.user.id;
-    const [, globalItems, guildItemsDoc, raidSeason] = await Promise.all([
+    const [, globalItems, guildItemsDoc] = await Promise.all([
       getUser(userId),
       getGlobalItems(),
-      guildItemsCollection.findOne({ _id: guildId }),
-      getRaidSeason()
+      guildItemsCollection.findOne({ _id: guildId })
     ]);
     const guildItems = guildItemsDoc?.items || {};
 
-    const payload = await buildStorePayload('economy', userId, guildId, globalItems, guildItems, raidSeason);
+    const payload = await buildStorePayload('economy', userId, guildId, globalItems, guildItems);
     await interaction.editReply(payload);
   } catch (error) {
     console.error('❌ Store command error:', error);
@@ -6057,38 +6157,12 @@ async function handleComponentInteraction(interaction) {
     const guildId = interaction.guildId;
     const userId = interaction.user.id;
     if (!guildId) return await interaction.deferUpdate();
-    const [globalItems, guildItemsDoc, raidSeason] = await Promise.all([
+    const [globalItems, guildItemsDoc] = await Promise.all([
       getGlobalItems(),
-      guildItemsCollection.findOne({ _id: guildId }),
-      getRaidSeason()
+      guildItemsCollection.findOne({ _id: guildId })
     ]);
     const guildItems = guildItemsDoc?.items || {};
-    const payload = await buildStorePayload(tab, userId, guildId, globalItems, guildItems, raidSeason);
-    await interaction.update(payload);
-
-  } else if (customId.startsWith('store_tab_raid_')) {
-    let raidSubTab = 'military';
-    let raidPage   = 0;
-    if (customId !== 'store_tab_raid_open') {
-      const stripped = customId.replace(/_prev$/, '').replace(/_next$/, '');
-      const inner    = stripped.replace('store_tab_raid_', '');
-      const lastUnd  = inner.lastIndexOf('_');
-      raidSubTab     = inner.slice(0, lastUnd);   // 'military' | 'training' | 'mercenaries'
-      raidPage       = parseInt(inner.slice(lastUnd + 1), 10) || 0;
-    }
-    const guildId    = interaction.guildId;
-    const userId     = interaction.user.id;
-    if (!guildId) return await interaction.deferUpdate();
-    const [globalItems, guildItemsDoc, raidSeason] = await Promise.all([
-      getGlobalItems(),
-      guildItemsCollection.findOne({ _id: guildId }),
-      getRaidSeason()
-    ]);
-    if (!raidSeason || !raidSeason.active) {
-      return await interaction.reply({ content: 'The Raid Season is not currently active.', ephemeral: true });
-    }
-    const guildItems = guildItemsDoc?.items || {};
-    const payload = await buildStorePayload('raid', userId, guildId, globalItems, guildItems, raidSeason, raidSubTab, raidPage);
+    const payload = await buildStorePayload(tab, userId, guildId, globalItems, guildItems);
     await interaction.update(payload);
 
   } else if (customId.startsWith('inv_prev_') || customId.startsWith('inv_next_')) {
@@ -6109,44 +6183,6 @@ async function handleComponentInteraction(interaction) {
   } else if (customId.startsWith('fish_reel_')) {
     const sessionId = customId.replace('fish_reel_', '');
     await handleReelIn(interaction, sessionId);
-
-  } else if (customId.startsWith('raid_buy_')) {
-    await handleRaidBuyUnit(interaction);
-
-  } else if (customId.startsWith('raid_train_')) {
-    await handleRaidTrainUnit(interaction);
-
-  } else if (customId.startsWith('raid_hire_merc_')) {
-    await handleRaidHireMerc(interaction);
-
-  } else if (customId.startsWith('raid_attack_merc_')) {
-    const targetId = customId.replace('raid_attack_merc_', '');
-    await handleRaidConfirmAttack(interaction, targetId, true);
-
-  } else if (customId.startsWith('raid_attack_')) {
-    const targetId = customId.replace('raid_attack_', '');
-    await handleRaidConfirmAttack(interaction, targetId, false);
-
-  } else if (customId.startsWith('raid_select_target_')) {
-    const sessionId = customId.replace('raid_select_target_', '');
-    const session   = global.activeRaidBrowseSessions[sessionId];
-    if (!session || interaction.user.id !== session.userId) return await interaction.reply({ content: 'This raid panel is not yours.', ephemeral: true });
-    session.selectedTargetId = interaction.values[0];
-    await interaction.update(await buildRaidBrowsePayload(session, sessionId));
-
-  } else if (customId.startsWith('raid_tutorial_')) {
-    await handleRaidTutorialButton(interaction);
-
-  } else if (customId.startsWith('raid_page_')) {
-    const inner     = customId.replace('raid_page_', '');
-    const lastUnd   = inner.lastIndexOf('_');
-    const sessionId = inner.slice(0, lastUnd);
-    const page      = parseInt(inner.slice(lastUnd + 1), 10) || 0;
-    const session   = global.activeRaidBrowseSessions[sessionId];
-    if (!session || interaction.user.id !== session.userId) return await interaction.reply({ content: 'This raid panel is not yours.', ephemeral: true });
-    session.page = page;
-    session.selectedTargetId = null;
-    await interaction.update(await buildRaidBrowsePayload(session, sessionId));
 
   } else if (customId.startsWith('quest_claim_community_')) {
     const guildId = customId.replace('quest_claim_community_', '');
@@ -8815,6 +8851,7 @@ async function handleGiveArtefactCommand(interaction) {
 
     } else if (i.customId === `ga_confirm_${sessionId}`) {
       const target = await getUser(targetId);
+      if (!Array.isArray(target.artefacts)) target.artefacts = [];
       let totalGiven = 0;
       const summaryLines = [];
 
@@ -8883,10 +8920,9 @@ async function handleGiveCashCommand(interaction) {
   const amount = interaction.options.getInteger('amount');
   const targetId = targetUser.id;
 
-  if (!userData[targetId]) userData[targetId] = { cash: 0, artefacts: [], bankBalance: 0 };
-
-  userData[targetId].cash += amount;
-  await saveUserData();
+  const target = await getUser(targetId);
+  target.cash = (Number(target.cash) || 0) + amount;
+  await saveUser(targetId);
 
   const successEmbed = new EmbedBuilder()
     .setTitle('Cash Given')
@@ -8894,7 +8930,7 @@ async function handleGiveCashCommand(interaction) {
     .addFields(
       { name: 'Recipient', value: `<@${targetId}>`, inline: true },
       { name: 'Amount Given', value: `$${amount.toLocaleString()}`, inline: true },
-      { name: 'New Cash Total', value: `$${userData[targetId].cash.toLocaleString()}`, inline: true },
+      { name: 'New Cash Total', value: `$${target.cash.toLocaleString()}`, inline: true },
       { name: 'Developer', value: `<@${interaction.user.id}>`, inline: true }
     )
     .setColor(0x00FF7F)
@@ -8916,10 +8952,9 @@ async function handleAddMoneyCommand(interaction) {
   const amount = interaction.options.getInteger('amount');
   const targetId = targetUser.id;
 
-  if (!userData[targetId]) userData[targetId] = { cash: 0, artefacts: [], bankBalance: 0 };
-
-  userData[targetId].cash += amount;
-  await saveUserData();
+  const target = await getUser(targetId);
+  target.cash = (Number(target.cash) || 0) + amount;
+  await saveUser(targetId);
 
   const successEmbed = new EmbedBuilder()
     .setTitle('Cash Added')
@@ -8927,7 +8962,7 @@ async function handleAddMoneyCommand(interaction) {
     .addFields(
       { name: 'Recipient', value: `<@${targetId}>`, inline: true },
       { name: 'Amount Added', value: `$${amount.toLocaleString()}`, inline: true },
-      { name: 'New Cash Total', value: `$${userData[targetId].cash.toLocaleString()}`, inline: true },
+      { name: 'New Cash Total', value: `$${target.cash.toLocaleString()}`, inline: true },
       { name: 'Developer', value: `<@${interaction.user.id}>`, inline: true }
     )
     .setColor(0x00FF7F)
@@ -9057,9 +9092,10 @@ async function handleRemoveArtefactCommand(interaction) {
   const artefactName = interaction.options.getString('artefact');
   const targetId = targetUser.id;
 
-  if (!userData[targetId]) userData[targetId] = { cash: 0, artefacts: [], bankBalance: 0 };
+  const target = await getUser(targetId);
+  if (!Array.isArray(target.artefacts)) target.artefacts = [];
 
-  const artefactIndex = userData[targetId].artefacts.findIndex(item => item === artefactName);
+  const artefactIndex = target.artefacts.findIndex(item => item === artefactName);
   if (artefactIndex === -1) {
     const notFoundEmbed = new EmbedBuilder()
       .setTitle('Artefact Not Found')
@@ -9072,8 +9108,8 @@ async function handleRemoveArtefactCommand(interaction) {
 
   const rarity = getRarityByArtefact(artefactName);
 
-  userData[targetId].artefacts.splice(artefactIndex, 1);
-  await saveUserData();
+  target.artefacts.splice(artefactIndex, 1);
+  await saveUser(targetId);
 
   const successEmbed = new EmbedBuilder()
     .setTitle('Artefact Removed')
@@ -9108,17 +9144,18 @@ async function handleRemoveCashCommand(interaction) {
   const amount = interaction.options.getInteger('amount');
   const targetId = targetUser.id;
 
-  if (!userData[targetId]) userData[targetId] = { cash: 0, artefacts: [], bankBalance: 0 };
-
-  const totalWealth = userData[targetId].cash + (userData[targetId].bankBalance || 0);
+  const target = await getUser(targetId);
+  target.cash = Number(target.cash) || 0;
+  target.bankBalance = Number(target.bankBalance) || 0;
+  const totalWealth = target.cash + target.bankBalance;
 
   if (totalWealth < amount) {
     const insufficientEmbed = new EmbedBuilder()
       .setTitle('Insufficient Funds')
       .setDescription(`${targetUser.displayName} only has $${totalWealth.toLocaleString()} total wealth, cannot remove $${amount.toLocaleString()}.`)
       .addFields(
-        { name: 'Available Cash', value: `$${userData[targetId].cash.toLocaleString()}`, inline: true },
-        { name: 'Bank Balance', value: `$${(userData[targetId].bankBalance || 0).toLocaleString()}`, inline: true },
+        { name: 'Available Cash', value: `$${target.cash.toLocaleString()}`, inline: true },
+        { name: 'Bank Balance', value: `$${target.bankBalance.toLocaleString()}`, inline: true },
         { name: 'Total Wealth', value: `$${totalWealth.toLocaleString()}`, inline: true }
       )
       .setColor(0xFF6B6B)
@@ -9131,19 +9168,19 @@ async function handleRemoveCashCommand(interaction) {
   let removedFromCash = 0;
   let removedFromBank = 0;
 
-  if (userData[targetId].cash > 0) {
-    removedFromCash = Math.min(userData[targetId].cash, remainingToRemove);
-    userData[targetId].cash -= removedFromCash;
+  if (target.cash > 0) {
+    removedFromCash = Math.min(target.cash, remainingToRemove);
+    target.cash -= removedFromCash;
     remainingToRemove -= removedFromCash;
   }
 
-  if (remainingToRemove > 0 && userData[targetId].bankBalance > 0) {
-    removedFromBank = Math.min(userData[targetId].bankBalance, remainingToRemove);
-    userData[targetId].bankBalance -= removedFromBank;
+  if (remainingToRemove > 0 && target.bankBalance > 0) {
+    removedFromBank = Math.min(target.bankBalance, remainingToRemove);
+    target.bankBalance -= removedFromBank;
     remainingToRemove -= removedFromBank;
   }
 
-  await saveUserData();
+  await saveUser(targetId);
 
   const successEmbed = new EmbedBuilder()
     .setTitle('Cash Removed (Bypassed Bank)')
@@ -9153,8 +9190,8 @@ async function handleRemoveCashCommand(interaction) {
       { name: 'Amount Removed', value: `$${amount.toLocaleString()}`, inline: true },
       { name: 'Removed from Cash', value: `$${removedFromCash.toLocaleString()}`, inline: true },
       { name: 'Removed from Bank', value: `$${removedFromBank.toLocaleString()}`, inline: true },
-      { name: 'New Cash Total', value: `$${userData[targetId].cash.toLocaleString()}`, inline: true },
-      { name: 'New Bank Balance', value: `$${(userData[targetId].bankBalance || 0).toLocaleString()}`, inline: true },
+      { name: 'New Cash Total', value: `$${target.cash.toLocaleString()}`, inline: true },
+      { name: 'New Bank Balance', value: `$${target.bankBalance.toLocaleString()}`, inline: true },
       { name: 'Developer', value: `<@${interaction.user.id}>`, inline: false }
     )
     .setColor(0xFF6B6B)
@@ -10295,645 +10332,6 @@ async function endCardDuelGame(game) {
 }
 
 
-async function buildRaidBrowsePayload(session, sessionId) {
-  const PER_PAGE   = 5;
-  const allPlayers = await getAllRaidPlayers();
-
-  const eligible = allPlayers.filter(p =>
-    p._id !== session.userId &&
-    !(session.raidedAlready || []).includes(p._id) &&
-    (p.raidsCompleted > 0 || Object.values(p.soldiers || {}).some(v => v > 0))
-  );
-
-  const totalPages  = Math.max(1, Math.ceil(eligible.length / PER_PAGE));
-  const safePage    = Math.max(0, Math.min(session.page, totalPages - 1));
-  session.page      = safePage;
-  const pagePlayers = eligible.slice(safePage * PER_PAGE, (safePage + 1) * PER_PAGE);
-
-  const userFetches = await Promise.all(pagePlayers.map(p => client.users.fetch(p._id).catch(() => null)));
-  const nameMap = {};
-  pagePlayers.forEach((p, i) => { nameMap[p._id] = userFetches[i] ? userFetches[i].username : p._id; });
-
-  const fields = [];
-  for (const p of pagePlayers) {
-    const { relative } = calcRaidCP(p);
-    const unitLines = RAID_UNITS
-      .filter(u => (p.soldiers || {})[u.id] > 0)
-      .map(u => {
-        const arch = RAID_ARCHETYPES[u.archetype];
-        return `  ${u.ascii.split('\n')[0].trim()}  x${p.soldiers[u.id]}  ${u.name}  [${arch.emoji} ${arch.name}]`;
-      })
-      .join('\n') || '  (no soldiers visible)';
-    fields.push({
-      name:  `${nameMap[p._id]}   |   Relative CP: ${relative.toLocaleString()}   |   Raids done: ${p.raidsCompleted}`,
-      value: `\`\`\`\n${unitLines}\n\`\`\`Record: ${p.victories}W / ${p.losses}L   |   Training: [HIDDEN]`,
-      inline: false
-    });
-  }
-
-  if (fields.length === 0) {
-    fields.push({ name: 'No Eligible Targets', value: 'All participants have either been raided by you already, or no empire has fielded any soldiers yet. Check back later.', inline: false });
-  }
-
-  const embed = new EmbedBuilder()
-    .setTitle('RAID SEASON  --  Choose Your Target')
-    .setDescription(
-      `Survey the field. Each empire shows its Relative CP and known military — training is hidden.\n\n` +
-      `Your Relative CP: **${session.myRelativeCP.toLocaleString()}**  |  Victories: **${session.myVictories}**  |  Defeats: **${session.myLosses}**\n` +
-      (session.mercenariesOwned > 0 ? `Sellsword Captains on retainer: **${session.mercenariesOwned}**` : 'No mercenaries on retainer.')
-    )
-    .addFields(...fields)
-    .setColor(0x8B0000)
-    .setFooter({ text: `Page ${safePage + 1} of ${totalPages}  |  You cannot raid the same empire twice this season` })
-    .setTimestamp();
-
-  const components = [];
-
-  if (pagePlayers.length > 0) {
-    const selectOptions = pagePlayers.map(p => {
-      const { relative } = calcRaidCP(p);
-      return { label: nameMap[p._id], value: p._id, description: `Relative CP: ${relative.toLocaleString()}  |  ${p.victories}W / ${p.losses}L`, default: p._id === session.selectedTargetId };
-    });
-    components.push(new ActionRowBuilder().addComponents(
-      new StringSelectMenuBuilder()
-        .setCustomId(`raid_select_target_${sessionId}`)
-        .setPlaceholder('Select a target empire to raid')
-        .addOptions(selectOptions)
-    ));
-  }
-
-  const hasSelected = !!session.selectedTargetId;
-  const hasMerc     = session.mercenariesOwned > 0;
-  const attackBtns  = [
-    new ButtonBuilder()
-      .setCustomId(`raid_attack_${session.selectedTargetId || 'none'}`)
-      .setLabel('Launch Raid')
-      .setStyle(ButtonStyle.Danger)
-      .setDisabled(!hasSelected)
-  ];
-  if (hasMerc) {
-    attackBtns.push(new ButtonBuilder()
-      .setCustomId(`raid_attack_merc_${session.selectedTargetId || 'none'}`)
-      .setLabel('Launch Raid  +  Deploy Captain')
-      .setStyle(ButtonStyle.Danger)
-      .setDisabled(!hasSelected));
-  }
-  components.push(new ActionRowBuilder().addComponents(...attackBtns));
-
-  if (totalPages > 1) {
-    components.push(new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId(`raid_page_${sessionId}_${safePage - 1}`).setLabel('< Prev').setStyle(ButtonStyle.Secondary).setDisabled(safePage === 0),
-      new ButtonBuilder().setCustomId(`raid_page_${sessionId}_${safePage + 1}`).setLabel('Next >').setStyle(ButtonStyle.Secondary).setDisabled(safePage >= totalPages - 1)
-    ));
-  }
-
-  return { embeds: [embed], components };
-}
-
-async function handleViewCPCommand(interaction) {
-  const season = await getRaidSeason();
-  if (!season.active) {
-    return await interaction.reply({
-      embeds: [new EmbedBuilder().setTitle('No Active Raid Season').setDescription('There is no Raid Season running right now.').setColor(0x8B0000).setTimestamp()],
-      ephemeral: true
-    });
-  }
-
-  const target = interaction.options.getUser('player');
-
-  if (!target || target.id === interaction.user.id) {
-    const raidData = await getRaidPlayer(interaction.user.id);
-    const { relative, actual } = calcRaidCP(raidData);
-    const unitLines = RAID_UNITS
-      .filter(u => (raidData.soldiers || {})[u.id] > 0)
-      .map(u => {
-        const level     = (raidData.trainingLevels || {})[u.id] || 1;
-        const actualEach = Math.floor(u.baseCP * (TRAINING_MULTIPLIERS[level] || 1.0));
-        return `${u.ascii.split('\n')[0].trim()}  x${raidData.soldiers[u.id]}  ${u.name}  [Lv.${level} -- ${actualEach} Actual CP each]`;
-      }).join('\n') || '  (no soldiers recruited)';
-
-    await interaction.reply({
-      embeds: [new EmbedBuilder()
-        .setTitle(`Empire of ${interaction.user.username}  --  Full Report`)
-        .setDescription('This report is private. Only you can see your Actual CP and training levels.')
-        .addFields(
-          { name: 'Relative CP (public)',  value: relative.toLocaleString(), inline: true },
-          { name: 'Actual CP (private)',   value: actual.toLocaleString(),   inline: true },
-          { name: 'Sellsword Captains',    value: `${raidData.mercenariesOwned || 0} on retainer  (+${RAID_MERCENARY.cp} Actual CP each if deployed)`, inline: false },
-          { name: 'Military Breakdown',    value: `\`\`\`\n${unitLines}\n\`\`\``, inline: false },
-          { name: 'Season Record',         value: `${raidData.victories} Victories  |  ${raidData.losses} Defeats  |  ${raidData.raidsCompleted} Raids launched`, inline: false }
-        )
-        .setColor(0x8B0000)
-        .setFooter({ text: 'Actual CP and training levels are hidden from all other players' })
-        .setTimestamp()],
-      ephemeral: true
-    });
-  } else {
-    const raidData = await getRaidPlayer(target.id);
-    const { relative } = calcRaidCP(raidData);
-    const unitLines = RAID_UNITS
-      .filter(u => (raidData.soldiers || {})[u.id] > 0)
-      .map(u => `${u.ascii.split('\n')[0].trim()}  x${raidData.soldiers[u.id]}  ${u.name}`)
-      .join('\n') || '  (no soldiers visible)';
-
-    await interaction.reply({
-      embeds: [new EmbedBuilder()
-        .setTitle(`Empire of ${target.username}  --  Field Intelligence`)
-        .setDescription('You are viewing public information only. Training levels and Actual CP are classified.')
-        .addFields(
-          { name: 'Relative CP',  value: `${relative.toLocaleString()}  (training: hidden)`, inline: true },
-          { name: 'Season Record', value: `${raidData.victories} Victories  |  ${raidData.losses} Defeats`, inline: true },
-          { name: 'Military',      value: `\`\`\`\n${unitLines}\n\`\`\``, inline: false }
-        )
-        .setColor(0x8B0000)
-        .setFooter({ text: 'Actual CP and training levels are classified' })
-        .setTimestamp()],
-      ephemeral: true
-    });
-  }
-}
-
-async function handleRaidCommand(interaction) {
-  const season = await getRaidSeason();
-  if (!season.active) {
-    return await interaction.reply({
-      embeds: [new EmbedBuilder().setTitle('No Active Raid Season').setDescription('There is no Raid Season running right now. Check back when one begins.').setColor(0x8B0000).setTimestamp()],
-      ephemeral: true
-    });
-  }
-
-  const userId   = interaction.user.id;
-  const raidData = await getRaidPlayer(userId);
-  const { relative } = calcRaidCP(raidData);
-  const sessionId = `${userId}_${Date.now()}`;
-
-  global.activeRaidBrowseSessions[sessionId] = {
-    userId,
-    page:            0,
-    selectedTargetId: null,
-    raidedAlready:   raidData.raidsInitiated || [],
-    myRelativeCP:    relative,
-    myVictories:     raidData.victories,
-    myLosses:        raidData.losses,
-    mercenariesOwned: raidData.mercenariesOwned || 0
-  };
-
-  const payload = await buildRaidBrowsePayload(global.activeRaidBrowseSessions[sessionId], sessionId);
-  await interaction.reply(payload);
-
-  setTimeout(() => { delete global.activeRaidBrowseSessions[sessionId]; }, 600000);
-}
-
-async function handleRaidBuyUnit(interaction) {
-  const season = await getRaidSeason();
-  if (!season.active) return await interaction.reply({ content: 'No active Raid Season.', ephemeral: true });
-
-  const withoutPrefix = interaction.customId.replace('raid_buy_', '');
-  const pageMatch     = withoutPrefix.match(/_p(\d+)$/);
-  const raidPage      = pageMatch ? parseInt(pageMatch[1], 10) : 0;
-  const inner         = withoutPrefix.replace(/_p\d+$/, '').split('_');
-  const qty           = parseInt(inner.pop(), 10);
-  const unitId        = inner.join('_');
-  const unit          = RAID_UNITS.find(u => u.id === unitId);
-  if (!unit) return await interaction.reply({ content: 'Unknown unit type.', ephemeral: true });
-
-  const userId    = interaction.user.id;
-  const totalCost = unit.cost * qty;
-  await getUser(userId);
-
-  if ((userData[userId].cash || 0) < totalCost) {
-    return await interaction.reply({ content: `You need **$${totalCost.toLocaleString()}** but only have **$${(userData[userId].cash || 0).toLocaleString()}**.`, ephemeral: true });
-  }
-
-  userData[userId].cash -= totalCost;
-  await saveUserData();
-
-  const raidData = await getRaidPlayer(userId);
-  raidData.soldiers[unit.id] = (raidData.soldiers[unit.id] || 0) + qty;
-  await saveRaidPlayer(raidData);
-
-  await interaction.reply({ content: `Recruited **x${qty} ${unit.name}** for **$${totalCost.toLocaleString()}**.`, ephemeral: true });
-
-  try {
-    const [globalItems, guildItemsDoc, updatedSeason] = await Promise.all([getGlobalItems(), guildItemsCollection.findOne({ _id: interaction.guildId }), getRaidSeason()]);
-    const payload = await buildStorePayload('raid', userId, interaction.guildId, globalItems, guildItemsDoc?.items || {}, updatedSeason, 'military', raidPage);
-    await interaction.message.edit(payload);
-  } catch (e) {}
-}
-
-async function handleRaidTrainUnit(interaction) {
-  const season = await getRaidSeason();
-  if (!season.active) return await interaction.reply({ content: 'No active Raid Season.', ephemeral: true });
-
-  const withoutPrefix = interaction.customId.replace('raid_train_', '');
-  const pageMatch     = withoutPrefix.match(/_p(\d+)$/);
-  const raidPage      = pageMatch ? parseInt(pageMatch[1], 10) : 0;
-  const unitId        = withoutPrefix.replace(/_p\d+$/, '');
-  const unit          = RAID_UNITS.find(u => u.id === unitId);
-  if (!unit) return await interaction.reply({ content: 'Unknown unit type.', ephemeral: true });
-
-  const userId   = interaction.user.id;
-  const raidData = await getRaidPlayer(userId);
-  const curLevel = (raidData.trainingLevels || {})[unit.id] || 1;
-  if (curLevel >= 5) return await interaction.reply({ content: `${unit.name} is already at maximum training level.`, ephemeral: true });
-
-  const nextLevel = curLevel + 1;
-  const cost      = TRAINING_COSTS[nextLevel];
-  await getUser(userId);
-
-  if ((userData[userId].cash || 0) < cost) {
-    return await interaction.reply({ content: `You need **$${cost.toLocaleString()}** to train ${unit.name} to Lv.${nextLevel}.`, ephemeral: true });
-  }
-
-  userData[userId].cash -= cost;
-  await saveUserData();
-
-  raidData.trainingLevels[unit.id] = nextLevel;
-  await saveRaidPlayer(raidData);
-
-  await interaction.reply({ content: `**${unit.name}** trained to **Lv.${nextLevel}** (${TRAINING_LABELS[nextLevel]}). Cost: **$${cost.toLocaleString()}**.`, ephemeral: true });
-
-  try {
-    const [globalItems, guildItemsDoc, updatedSeason] = await Promise.all([getGlobalItems(), guildItemsCollection.findOne({ _id: interaction.guildId }), getRaidSeason()]);
-    const payload = await buildStorePayload('raid', userId, interaction.guildId, globalItems, guildItemsDoc?.items || {}, updatedSeason, 'training', raidPage);
-    await interaction.message.edit(payload);
-  } catch (e) {}
-}
-
-async function handleRaidHireMerc(interaction) {
-  const season = await getRaidSeason();
-  if (!season.active) return await interaction.reply({ content: 'No active Raid Season.', ephemeral: true });
-
-  const qty       = parseInt(interaction.customId.replace('raid_hire_merc_', ''), 10) || 1;
-  const totalCost = RAID_MERCENARY.cost * qty;
-  const userId    = interaction.user.id;
-  await getUser(userId);
-
-  if ((userData[userId].cash || 0) < totalCost) {
-    return await interaction.reply({ content: `You need **$${totalCost.toLocaleString()}** but only have **$${(userData[userId].cash || 0).toLocaleString()}**.`, ephemeral: true });
-  }
-
-  userData[userId].cash -= totalCost;
-  await saveUserData();
-
-  const raidData = await getRaidPlayer(userId);
-  raidData.mercenariesOwned = (raidData.mercenariesOwned || 0) + qty;
-  await saveRaidPlayer(raidData);
-
-  await interaction.reply({ content: `Hired **x${qty} ${RAID_MERCENARY.name}** for **$${totalCost.toLocaleString()}**. Captains on retainer: **${raidData.mercenariesOwned}**.`, ephemeral: true });
-
-  try {
-    const [globalItems, guildItemsDoc, updatedSeason] = await Promise.all([getGlobalItems(), guildItemsCollection.findOne({ _id: interaction.guildId }), getRaidSeason()]);
-    const payload = await buildStorePayload('raid', userId, interaction.guildId, globalItems, guildItemsDoc?.items || {}, updatedSeason, 'mercenaries', 0);
-    await interaction.message.edit(payload);
-  } catch (e) {}
-}
-
-async function handleRaidConfirmAttack(interaction, targetId, deployMerc) {
-  const season = await getRaidSeason();
-  if (!season.active) return await interaction.reply({ content: 'No active Raid Season.', ephemeral: true });
-
-  const attackerId = interaction.user.id;
-  if (attackerId === targetId) return await interaction.reply({ content: 'You cannot raid your own empire.', ephemeral: true });
-
-  const [attackerData, defenderData] = await Promise.all([getRaidPlayer(attackerId), getRaidPlayer(targetId)]);
-
-  if ((attackerData.raidsInitiated || []).includes(targetId)) {
-    return await interaction.reply({ content: 'You have already raided this empire this season. Choose a different target.', ephemeral: true });
-  }
-  if (deployMerc && (attackerData.mercenariesOwned || 0) < 1) {
-    return await interaction.reply({ content: 'You have no Sellsword Captains to deploy.', ephemeral: true });
-  }
-
-  if (deployMerc) attackerData.mercenariesOwned = Math.max(0, (attackerData.mercenariesOwned || 0) - 1);
-
-  attackerData.raidsInitiated = [...(attackerData.raidsInitiated || []), targetId];
-  attackerData.raidsCompleted = (attackerData.raidsCompleted || 0) + 1;
-  await saveRaidPlayer(attackerData);
-
-  const session = Object.values(global.activeRaidBrowseSessions).find(s => s.userId === attackerId);
-  if (session) { session.raidedAlready = attackerData.raidsInitiated; session.mercenariesOwned = attackerData.mercenariesOwned; }
-
-  const [attackerUser, defenderUser] = await Promise.all([
-    client.users.fetch(attackerId).catch(() => null),
-    client.users.fetch(targetId).catch(() => null)
-  ]);
-  const attackerName = attackerUser ? attackerUser.username : attackerId;
-  const defenderName = defenderUser ? defenderUser.username : targetId;
-
-  const attackerCP = calcRaidCP(attackerData);
-  const defenderCP = calcRaidCP(defenderData);
-  const { attackerAdjusted, defenderAdjusted } = calcRaidCPWithMatchups(attackerData, defenderData, deployMerc);
-
-  const delay = Math.floor(Math.random() * 11) + 10; // 10-20 seconds
-  const scenes = generateBattleScenes(attackerData, defenderData, attackerName, defenderName, deployMerc);
-  const stageCount  = scenes.length;
-  const stageDelay  = Math.floor((delay * 1000) / (stageCount + 1));
-
-  const openingLines = [
-    '==========================================',
-    `  ATTACKER                  DEFENDER`,
-    `  ${attackerName.padEnd(24)}${defenderName}`,
-    '==========================================',
-    ...RAID_UNITS.filter(u => (attackerData.soldiers || {})[u.id] > 0 || (defenderData.soldiers || {})[u.id] > 0).map(u => {
-      const aCount = (attackerData.soldiers || {})[u.id] || 0;
-      const dCount = (defenderData.soldiers || {})[u.id] || 0;
-      const arch   = RAID_ARCHETYPES[u.archetype];
-      const art    = u.ascii.split('\n')[0].trim();
-      const aStr   = aCount > 0 ? `${art} x${aCount} [${arch.name}]` : '';
-      const dStr   = dCount > 0 ? `${art} x${dCount} [${arch.name}]` : '';
-      return `  ${aStr.padEnd(28)}${dStr}`;
-    }),
-    '==========================================',
-    `  Rel. CP: ${attackerCP.relative.toLocaleString().padEnd(16)} Rel. CP: ${defenderCP.relative.toLocaleString()}`,
-    `  Actual CP: [HIDDEN]      Actual CP: [HIDDEN]`,
-    (deployMerc ? `  + Sellsword Captain deployed` : ''),
-    '==========================================',
-    `  Armies engaged. The field is in motion...`,
-    '=========================================='
-  ].filter(l => l !== '').join('\n');
-
-  const openingEmbed = new EmbedBuilder()
-    .setTitle('THE FIELD OF BATTLE')
-    .setDescription(`\`\`\`\n${openingLines}\n\`\`\``)
-    .setColor(0x8B0000)
-    .setFooter({ text: 'Archetype matchups are being resolved across the battlefield' })
-    .setTimestamp();
-
-  await interaction.update({ embeds: [openingEmbed], components: [] });
-
-  for (let i = 0; i < stageCount; i++) {
-    setTimeout(async () => {
-      try {
-        const sceneEmbed = new EmbedBuilder()
-          .setTitle(`THE FIELD OF BATTLE  --  Scene ${i + 1} of ${stageCount}`)
-          .setDescription(`\`\`\`\n${scenes[i]}\n\`\`\``)
-          .setColor(0x8B0000)
-          .setFooter({ text: 'Actual CP is concealed from both sides until the result is declared' })
-          .setTimestamp();
-        await interaction.editReply({ embeds: [sceneEmbed], components: [] });
-      } catch (e) {}
-    }, stageDelay * (i + 1));
-  }
-
-  setTimeout(async () => {
-    try {
-      const attackerWins = attackerAdjusted > defenderAdjusted;
-      const winnerId     = attackerWins ? attackerId : targetId;
-      const loserId      = attackerWins ? targetId   : attackerId;
-      const winnerName   = attackerWins ? attackerName : defenderName;
-      const loserName    = attackerWins ? defenderName : attackerName;
-      const winnerCP     = attackerWins ? attackerAdjusted : defenderAdjusted;
-      const loserCP      = attackerWins ? defenderAdjusted : attackerAdjusted;
-
-      if (attackerWins) { attackerData.victories = (attackerData.victories || 0) + 1; defenderData.losses = (defenderData.losses || 0) + 1; }
-      else              { defenderData.victories = (defenderData.victories || 0) + 1; }
-      await Promise.all([saveRaidPlayer(attackerData), saveRaidPlayer(defenderData)]);
-
-      const winnerRaidData = attackerWins ? attackerData : defenderData;
-      const loserRaidData  = attackerWins ? defenderData : attackerData;
-      const winnerPayout   = Math.min(winnerRaidData.raidsCompleted * RAID_PAYOUT_RATE, RAID_PAYOUT_CAP);
-      const loserPenalty   = Math.min(loserRaidData.raidsCompleted  * RAID_PAYOUT_RATE, RAID_PAYOUT_CAP);
-
-      const resultLines = [
-        '==========================================',
-        '  BATTLE RESOLVED',
-        '==========================================',
-        `  VICTOR:   ${winnerName}`,
-        `  Adjusted CP: ${winnerCP.toLocaleString()}`,
-        '',
-        `  DEFEATED: ${loserName}`,
-        `  Adjusted CP: ${loserCP.toLocaleString()}`,
-        '==========================================',
-        '  Records updated. Spoils await season end.',
-        '=========================================='
-      ].join('\n');
-
-      const resultEmbed = new EmbedBuilder()
-        .setTitle('THE BATTLE IS DECIDED')
-        .setDescription(`\`\`\`\n${resultLines}\n\`\`\``)
-        .addFields(
-          { name: 'Victor',   value: `${winnerName}  --  ${winnerRaidData.victories} victory(s) this season`, inline: true },
-          { name: attackerWins ? 'Defeated' : 'Repelled', value: attackerWins ? `${loserName}  --  ${loserRaidData.losses} defeat(s) this season` : `${loserName}  --  raid repelled, no loss recorded`, inline: true },
-          { name: 'Payout Note', value: `Winnings and losses settle at season end. The more raids you complete, the higher the stakes per result.`, inline: false }
-        )
-        .setColor(attackerWins ? 0x51CF66 : 0xFF6B6B)
-        .setTimestamp();
-
-      try { await interaction.editReply({ embeds: [resultEmbed], components: [] }); } catch (e) {}
-
-      const [winnerUser2, loserUser2] = await Promise.all([
-        client.users.fetch(winnerId).catch(() => null),
-        client.users.fetch(loserId).catch(() => null)
-      ]);
-      if (winnerUser2) winnerUser2.send({ embeds: [new EmbedBuilder()
-        .setTitle('You won a raid.')
-        .setDescription(`Your empire defeated **${loserName}** on the field of battle.`)
-        .addFields(
-          { name: 'Your Adjusted CP', value: winnerCP.toLocaleString(), inline: true },
-          { name: 'Opponent',         value: loserName,                  inline: true },
-          { name: 'Projected Payout', value: `+$${winnerPayout.toLocaleString()} at season end  (based on ${winnerRaidData.raidsCompleted} raids completed)`, inline: false }
-        ).setColor(0x51CF66).setTimestamp()] }).catch(() => {});
-      if (loserUser2) loserUser2.send({ embeds: [new EmbedBuilder()
-        .setTitle(attackerWins ? 'Your empire was defeated.' : 'Your raid was repelled.')
-        .setDescription(attackerWins
-          ? `**${winnerName}** overwhelmed your forces. The defeat is recorded.`
-          : `**${winnerName}** held their ground and drove your forces back. No loss has been recorded — but they now know your Adjusted CP.`)
-        .addFields(
-          { name: 'Your Adjusted CP', value: loserCP.toLocaleString(), inline: true },
-          { name: attackerWins ? 'Attacker' : 'Defender', value: winnerName, inline: true },
-          ...(attackerWins ? [{ name: 'Projected Penalty', value: `-$${loserPenalty.toLocaleString()} at season end  (based on ${loserRaidData.raidsCompleted} raids completed)`, inline: false }] : [])
-        ).setColor(0xFF6B6B).setTimestamp()] }).catch(() => {});
-
-    } catch (err) { console.error('Raid resolution error:', err); }
-  }, delay * 1000);
-}
-
-
-const RAID_TUTORIAL_PAGES = [
-  {
-    title: 'Welcome to the Raid Season  --  Page 1 of 7',
-    description:
-      `A Raid Season is a **30-day global event** that runs across every server Fortune Bot lives in.\n\n` +
-      `During this time, you can spend your cash to **build an empire** — recruiting soldiers, training them, and hiring mercenaries. ` +
-      `When you feel ready, you can march on a rival and take the fight to them.\n\n` +
-      `At the end of the 30 days, your wins and losses are tallied and **real money changes hands**. ` +
-      `The more raids you complete over the season, the higher the stakes on every single one of them.\n\n` +
-      `Victories pay out. Losses cost you — but only **defenders** accumulate losses. ` +
-      `If you launch a raid and get repelled, no loss is recorded against you. You simply learn from it and move on.\n\n` +
-      `Lose badly enough as a defender and it will cut into your bank. Lose catastrophically and you go into debt.\n\n` +
-      `**This is not a casual event. Build well or do not build at all.**`,
-    footer: 'Raid Season Tutorial  |  Use the buttons below to navigate'
-  },
-  {
-    title: 'Relative CP vs Actual CP  --  Page 2 of 7',
-    description:
-      `CP stands for **Combat Power**. It decides who wins a raid. There are two kinds, and understanding the difference is the most important thing in this entire tutorial.\n\n` +
-      `**Relative CP** is calculated from the raw number of soldiers you have multiplied by each unit's base CP value. ` +
-      `It is visible to every other player. When someone uses \`/viewcp\` on you or browses \`/raid\`, this is the number they see.\n\n` +
-      `**Actual CP** is calculated the same way — but also factors in your **training levels**. ` +
-      `A well-trained army can have an Actual CP far higher than its Relative CP suggests. ` +
-      `Only you can see your own Actual CP. Your rivals cannot.\n\n` +
-      `When a raid resolves, **only Actual CP is used**. Relative CP is bait.\n\n` +
-      `\`\`\`\n` +
-      `Example:\n` +
-      ` Player A -- Relative CP: 1,200  |  Actual CP: 1,980  (Lv.5 trained)\n` +
-      ` Player B -- Relative CP: 1,500  |  Actual CP: 1,500  (untrained)\n` +
-      ` Result: Player A wins despite appearing weaker on paper.\n` +
-      `\`\`\``,
-    footer: 'Raid Season Tutorial  |  Training is your hidden advantage'
-  },
-  {
-    title: 'Building Your Military  --  Page 3 of 7',
-    description:
-      `Open \`/store\` during an active season and you will find a **[ RAID SEASON ]** tab.\n\n` +
-      `Inside, the **Buy Military** sub-tab lists every unit type available to recruit. Each unit has a cost and a base CP value:\n\n` +
-      `\`\`\`\n` +
-      ` ( o )  Peasant Levy      $100   |  8 CP\n` +
-      ` ( o )  Crossbowman       $350   |  18 CP\n` +
-      ` ( o )  Spearman          $300   |  15 CP\n` +
-      ` { o }  Man-at-Arms       $600   |  28 CP\n` +
-      ` ( o )  Squire            $500   |  22 CP\n` +
-      ` [_o_]  Sergeant          $900   |  40 CP\n` +
-      ` [#o#]  Knight            $2,000 |  90 CP\n` +
-      ` ( o )  Cavalry           $1,800 |  75 CP\n` +
-      ` ( o )  Siege Engineer    $1,500 |  60 CP\n` +
-      ` (***)  Battle Mage       $3,000 | 130 CP\n` +
-      `\`\`\`\n\n` +
-      `You can buy in quantities of 1, 5, or 10 at a time. Costs come directly from your cash on hand. ` +
-      `More soldiers means more Relative CP — and more Actual CP once you start training.`,
-    footer: 'Raid Season Tutorial  |  Quality beats quantity once training is involved'
-  },
-  {
-    title: 'Training Your Units  --  Page 4 of 7',
-    description:
-      `The **Training** sub-tab in \`/store\` lets you level up each unit type from **Level 1 to Level 5**.\n\n` +
-      `Training does not affect Relative CP at all — it only increases Actual CP. That is the point. ` +
-      `Your rivals see your Relative CP and think they know what they're facing. They don't.\n\n` +
-      `\`\`\`\n` +
-      ` Level 1  -- x1.00  (base, no bonus)\n` +
-      ` Level 2  -- x1.20  (+20% CP)   cost: $800\n` +
-      ` Level 3  -- x1.40  (+40% CP)   cost: $2,500\n` +
-      ` Level 4  -- x1.65  (+65% CP)   cost: $7,000\n` +
-      ` Level 5  -- x2.00  (+100% CP)  cost: $18,000\n` +
-      `\`\`\`\n\n` +
-      `Training costs apply **per unit type**, not per soldier. So if you have 50 Knights and train them to Level 5, ` +
-      `you pay $18,000 once and all 50 Knights benefit.\n\n` +
-      `A fully trained Battle Mage has **260 Actual CP** each while showing only 130 Relative CP to enemies. ` +
-      `Train the expensive units. It compounds fast.`,
-    footer: 'Raid Season Tutorial  |  Training costs are one-time per unit type'
-  },
-  {
-    title: 'Mercenaries  --  Page 5 of 7',
-    description:
-      `The **Mercenaries** sub-tab in \`/store\` lets you hire **Sellsword Captains**.\n\n` +
-      `\`\`\`\n` +
-      ` (XoX)\n` +
-      ` /|\\/|     Sellsword Captain\n` +
-      `  / \\      $5,000 per hire  |  +250 Actual CP\n` +
-      `\`\`\`\n\n` +
-      `A Sellsword Captain does not contribute to your standing Relative CP — they do not show up in \`/viewcp\` for other players. ` +
-      `But when you launch a raid and choose to deploy one, they add **+250 Actual CP for that battle only**.\n\n` +
-      `After the raid ends — win or lose — the captain is gone. You must hire again for the next one.\n\n` +
-      `**When to use them:** Deploy a captain when you are raiding someone whose Actual CP you suspect is higher than their Relative CP suggests. ` +
-      `A captain can turn a losing fight into a winning one. You can also hold them back and let opponents underestimate you — then deploy on a fight that matters.\n\n` +
-      `You can hold multiple captains on retainer. Spend wisely.`,
-    footer: 'Raid Season Tutorial  |  Captains are single-use — deploy with intention'
-  },
-  {
-    title: 'Raiding  --  Page 6 of 7',
-    description:
-      `When your army is built, run \`/raid\`.\n\n` +
-      `You will see a list of all active participants — their name, Relative CP, known military, and season record. ` +
-      `Training levels and Actual CP are hidden from you. Choose wisely.\n\n` +
-      `Select a target from the dropdown. You will see two buttons:\n` +
-      `- **Launch Raid** — sends your army as-is\n` +
-      `- **Launch Raid + Deploy Captain** — sends your army with a Sellsword Captain attached (costs one captain)\n\n` +
-      `Once you confirm, a battle embed appears in the channel. After **10 to 20 seconds**, both Actual CPs are compared and the higher one wins. ` +
-      `Both you and your target are sent a DM with the result and your projected payout.\n\n` +
-      `**If your raid is repelled:**\n` +
-      `No loss is recorded against you. You walk away clean — but the defender now knows your Actual CP from the resolution reveal. ` +
-      `They can use that information to decide whether to counter-raid you.\n\n` +
-      `**Rules:**\n` +
-      `- You can only raid each player **once per season** — no farming the same target\n` +
-      `- Offline players can be raided; they will be notified by DM\n` +
-      `- Actual CP is revealed only at resolution — not before`,
-    footer: 'Raid Season Tutorial  |  You cannot raid the same empire twice this season'
-  },
-  {
-    title: 'Season-End Payouts  --  Page 7 of 7',
-    description:
-      `No money changes hands during the season. Wins and losses are **tracked**, not paid out immediately.\n\n` +
-      `When the season ends, every player's results are settled at once using this formula:\n\n` +
-      `\`\`\`\n` +
-      ` Rate per win/loss = min(raids you completed x $500, $5,000)\n\n` +
-      ` Net change = (your victories x rate) - (your losses x rate)\n` +
-      `\`\`\`\n\n` +
-      `The more raids you complete over the season, the more each individual win and loss is worth. ` +
-      `Someone who raids twice risks $1,000 per result. Someone who raids ten times risks $5,000 per result — the maximum.\n\n` +
-      `**Important:** only **losses taken as a defender** count against you. If you launched a raid and got repelled, ` +
-      `that does not appear in your losses — it simply does not count in either direction.\n\n` +
-      `**Consequences:**\n` +
-      `- Positive net: cash added to your wallet\n` +
-      `- Negative net: deducted from cash, then from your bank if cash runs out\n` +
-      `- If your bank is also drained: you go into debt\n\n` +
-      `All armies are disbanded when the season closes. Training is erased. The next season, everyone starts from nothing.\n\n` +
-      `**You are ready. Open \`/store\` and start building.**`,
-    footer: 'Raid Season Tutorial  |  All army data resets when the season ends'
-  }
-];
-
-function buildRaidTutorialPayload(page) {
-  const safePage = Math.max(0, Math.min(page, RAID_TUTORIAL_PAGES.length - 1));
-  const data     = RAID_TUTORIAL_PAGES[safePage];
-  const isFirst  = safePage === 0;
-  const isLast   = safePage === RAID_TUTORIAL_PAGES.length - 1;
-
-  const embed = new EmbedBuilder()
-    .setTitle(data.title)
-    .setDescription(data.description)
-    .setColor(0x8B0000)
-    .setFooter({ text: data.footer })
-    .setTimestamp();
-
-  const btns = [];
-  if (!isFirst) {
-    btns.push(new ButtonBuilder().setCustomId(`raid_tutorial_${safePage - 1}`).setLabel('< Back').setStyle(ButtonStyle.Secondary));
-  }
-  if (!isLast) {
-    btns.push(new ButtonBuilder().setCustomId(`raid_tutorial_${safePage + 1}`).setLabel('Next >').setStyle(ButtonStyle.Primary));
-  } else {
-    btns.push(new ButtonBuilder().setCustomId('raid_tutorial_close').setLabel('Got it. Close this.').setStyle(ButtonStyle.Success));
-  }
-
-  return { embeds: [embed], components: [new ActionRowBuilder().addComponents(...btns)], ephemeral: true };
-}
-
-async function handleRaidTutorialButton(interaction) {
-  const customId = interaction.customId;
-
-  if (customId === 'raid_tutorial_close') {
-    return await interaction.update({
-      embeds: [new EmbedBuilder()
-        .setTitle('Good luck out there.')
-        .setDescription('Open `/store` to start building your empire.\nUse `/viewcp` to check your CP.\nUse `/raid` when you are ready to march.')
-        .setColor(0x8B0000)
-        .setTimestamp()],
-      components: []
-    });
-  }
-
-  const page = parseInt(customId.replace('raid_tutorial_', ''), 10);
-  if (isNaN(page)) return;
-
-  const payload = buildRaidTutorialPayload(page);
-  if (interaction.replied || interaction.deferred) {
-    await interaction.update(payload);
-  } else {
-    await interaction.reply(payload);
-  }
-}
-
 async function handleServerBlacklistCommand(interaction) {
   if (!isDeveloper(interaction.user.id)) {
     return await interaction.reply({ embeds: [new EmbedBuilder().setTitle('Access Denied').setDescription('Developer only.').setColor(0xFF6B6B)], ephemeral: true });
@@ -10979,136 +10377,6 @@ async function handleServerBlacklistCommand(interaction) {
       .setColor(0x51CF66)
       .setTimestamp()], ephemeral: true });
   }
-}
-
-async function handleStartRaidCommand(interaction) {
-  if (!isDeveloper(interaction.user.id)) {
-    return await interaction.reply({ embeds: [new EmbedBuilder().setTitle('Access Denied').setDescription('Developer only.').setColor(0xFF6B6B)], ephemeral: true });
-  }
-  const existing = await getRaidSeason();
-  if (existing.active) {
-    return await interaction.reply({ embeds: [new EmbedBuilder().setTitle('Season Already Active').setDescription('A Raid Season is already running. Use /end-raid to close it first.').setColor(0xFF9F43)], ephemeral: true });
-  }
-
-  const now      = Date.now();
-  const seasonId = (existing.seasonId || 0) + 1;
-  await saveRaidSeason({ active: true, startedAt: now, endsAt: now + 30 * 24 * 60 * 60 * 1000, seasonId });
-  await interaction.reply({ embeds: [new EmbedBuilder().setTitle('Raid Season Started').setDescription(`Season ${seasonId} is now active. Broadcasting to all servers.`).setColor(0x8B0000)], ephemeral: true });
-
-  const announcementEmbed = new EmbedBuilder()
-    .setTitle('THE RAIDING SEASON IS UPON US')
-    .setDescription(
-      `The borders between empires grow thin. Rulers sharpen their steel, commanders marshal their forces, and coin flows toward those bold enough to seize it.\n\n` +
-      `**A new Raid Season has begun.**\n\n` +
-      `Spend your wealth to build a military. Conscript levies, hire crossbowmen, field knights, deploy battle mages. ` +
-      `Every soldier recruits adds to your **Relative CP** — visible to all. But your true strength, your **Actual CP**, sharpened by training your rivals cannot see, remains yours alone to know.\n\n` +
-      `When you are ready, march on your rivals with \`/raid\`. The battlefield does not care for your reputation. Only Actual CP decides who walks away.\n\n` +
-      `For those who prefer to fight dirty: hire **Sellsword Captains** from the Mercenaries tab in \`/store\`. They fight once and vanish — but they hit hard enough to turn the tide.\n\n` +
-      `At season end, every victory and every defeat is tallied. Victors claim their spoils. The defeated pay their debts — even if it cuts into their reserves. Even if it leaves them in ruin.\n\n` +
-      `**The season lasts 30 days.**\n\n` +
-      `Open \`/store\` to build your empire. Use \`/viewcp\` to inspect yourself or your rivals. Use \`/raid\` to declare war.\n\n` +
-      `Build well. Strike first. Leave nothing on the table.`
-    )
-    .setColor(0x8B0000)
-    .setFooter({ text: `Raid Season ${seasonId}  |  Runs for 30 days` })
-    .setTimestamp();
-
-  let broadcast = 0;
-  for (const guild of client.guilds.cache.values()) {
-    try {
-      const channelId = await getAnnouncementChannelId(guild.id);
-      let channel = channelId ? await client.channels.fetch(channelId).catch(() => null) : null;
-      if (!channel) channel = guild.channels.cache.filter(c => c.isTextBased() && c.permissionsFor(guild.members.me)?.has('SendMessages')).sort((a, b) => a.rawPosition - b.rawPosition).first();
-      const participateRow = new ActionRowBuilder().addComponents(
-        new ButtonBuilder()
-          .setCustomId('raid_tutorial_0')
-          .setLabel('Start Here -- New to Raiding?')
-          .setStyle(ButtonStyle.Danger)
-      );
-      if (channel) { await channel.send({ embeds: [announcementEmbed], components: [participateRow] }); broadcast++; }
-    } catch (e) {}
-  }
-  console.log(`Raid Season ${seasonId} started — broadcast to ${broadcast} server(s).`);
-}
-
-async function handleEndRaidCommand(interaction) {
-  if (!isDeveloper(interaction.user.id)) {
-    return await interaction.reply({ embeds: [new EmbedBuilder().setTitle('Access Denied').setDescription('Developer only.').setColor(0xFF6B6B)], ephemeral: true });
-  }
-  const season = await getRaidSeason();
-  if (!season.active) {
-    return await interaction.reply({ embeds: [new EmbedBuilder().setTitle('No Active Season').setDescription('There is no Raid Season running.').setColor(0xFF9F43)], ephemeral: true });
-  }
-
-  await interaction.reply({ embeds: [new EmbedBuilder().setTitle('Ending Raid Season...').setDescription('Calculating payouts and wiping all army data. This may take a moment.').setColor(0x8B0000)], ephemeral: true });
-
-  const allPlayers = await getAllRaidPlayers();
-  const results    = [];
-
-  for (const p of allPlayers) {
-    if (!p.raidsCompleted && !p.victories && !p.losses) continue;
-    const rate      = Math.min((p.raidsCompleted || 0) * RAID_PAYOUT_RATE, RAID_PAYOUT_CAP);
-    const netChange = ((p.victories || 0) * rate) - ((p.losses || 0) * rate);
-
-    await getUser(p._id);
-    const user = userData[p._id];
-    if (!user) continue;
-
-    user.cash = (user.cash || 0) + netChange;
-    if (user.cash < 0) {
-      const shortfall  = Math.abs(user.cash);
-      user.cash        = 0;
-      user.bankBalance = (user.bankBalance || 0) - shortfall;
-    }
-
-    results.push({ userId: p._id, victories: p.victories || 0, losses: p.losses || 0, rate, netChange });
-  }
-
-  await saveUserData();
-  if (raidPlayersCollection) await raidPlayersCollection.deleteMany({});
-  await saveRaidSeason({ active: false, startedAt: season.startedAt, endsAt: Date.now(), seasonId: season.seasonId });
-
-  for (const r of results) {
-    try {
-      const u = await client.users.fetch(r.userId).catch(() => null);
-      if (!u) continue;
-      const sign = r.netChange >= 0 ? '+' : '';
-      await u.send({ embeds: [new EmbedBuilder()
-        .setTitle('Raid Season Results')
-        .setDescription(`Season ${season.seasonId} has concluded. Your account has been settled.`)
-        .addFields(
-          { name: 'Final Record', value: `${r.victories} Victories  |  ${r.losses} Defeats  |  Rate: $${r.rate.toLocaleString()} per result`, inline: false },
-          { name: 'Net Change',   value: `${sign}$${r.netChange.toLocaleString()}`, inline: true }
-        )
-        .setColor(r.netChange >= 0 ? 0x51CF66 : 0xFF6B6B).setTimestamp()] }).catch(() => {});
-    } catch (e) {}
-  }
-
-  const topLines = results.sort((a, b) => b.netChange - a.netChange).slice(0, 10)
-    .map(r => `  ${r.netChange >= 0 ? '+' : ''}$${r.netChange.toLocaleString().padStart(10)}  |  ${r.victories}W/${r.losses}L  |  <@${r.userId}>`)
-    .join('\n') || '  (no active participants)';
-
-  const closingEmbed = new EmbedBuilder()
-    .setTitle('THE RAIDING SEASON HAS ENDED')
-    .setDescription(
-      `The dust settles. The ledgers are balanced. Every empire has been paid — or made to pay.\n\n` +
-      `Winnings have been deposited. Losses have been deducted. Those who overextended may find their reserves, or even their bank, cut into.\n\n` +
-      `All armies have been disbanded. All training has been erased. When the next season rises, every ruler begins from nothing.\n\n` +
-      `**Season ${season.seasonId}  --  Final Standings (Top 10)**\n\`\`\`\n${topLines}\n\`\`\``
-    )
-    .setColor(0x8B0000)
-    .setFooter({ text: `Raid Season ${season.seasonId} closed` })
-    .setTimestamp();
-
-  for (const guild of client.guilds.cache.values()) {
-    try {
-      const channelId = await getAnnouncementChannelId(guild.id);
-      let channel = channelId ? await client.channels.fetch(channelId).catch(() => null) : null;
-      if (!channel) channel = guild.channels.cache.filter(c => c.isTextBased() && c.permissionsFor(guild.members.me)?.has('SendMessages')).sort((a, b) => a.rawPosition - b.rawPosition).first();
-      if (channel) await channel.send({ embeds: [closingEmbed] });
-    } catch (e) {}
-  }
-  console.log(`Raid Season ${season.seasonId} ended. ${results.length} player(s) settled.`);
 }
 
 const port = Number(process.env.PORT) || 8080;
