@@ -180,6 +180,7 @@ global.activeDuelGames = {};
 global.activeCardDuelGames = {};
 global.messageTracker = {};
 global.giveArtefactSessions = {};
+global.removeArtefactSessions = {};
 global.massSellSessions = {};
 global.activeFishSessions = {};
 
@@ -1951,11 +1952,6 @@ client.once('clientReady', async () => {
       .setDescription('View your daily quests and the server\'s weekly community quest'),
 
     new SlashCommandBuilder()
-      .setName('reset-weekly-quest')
-      .setDescription('Choose a new weekly community quest for this server (Developer only)')
-      .setDMPermission(false),
-
-    new SlashCommandBuilder()
       .setName('give-roles')
       .setDescription('Assign a role to a server member (Admin only)')
       .addUserOption(option =>
@@ -2023,6 +2019,52 @@ client.once('clientReady', async () => {
   ];
 
   const devCommands = [
+    new SlashCommandBuilder()
+      .setName('reset-weekly-quest')
+      .setDescription('Choose a new weekly community quest for this server (Developer only)')
+      .setDefaultMemberPermissions(0)
+      .setDMPermission(false),
+
+    new SlashCommandBuilder()
+      .setName('give')
+      .setDescription('Give a developer-controlled reward to a user')
+      .setDefaultMemberPermissions(0)
+      .setDMPermission(false)
+      .addSubcommand(subcommand =>
+        subcommand.setName('cash')
+          .setDescription('Give cash to a user')
+          .addUserOption(option => option.setName('user').setDescription('User to receive cash').setRequired(true))
+          .addIntegerOption(option => option.setName('amount').setDescription('Amount of cash').setRequired(true).setMinValue(1)))
+      .addSubcommand(subcommand =>
+        subcommand.setName('artefact')
+          .setDescription('Choose one or more artefacts to give')
+          .addUserOption(option => option.setName('user').setDescription('User to receive artefacts').setRequired(true)))
+      .addSubcommand(subcommand =>
+        subcommand.setName('shard')
+          .setDescription('Give artifact shards to a user')
+          .addUserOption(option => option.setName('user').setDescription('User to receive shards').setRequired(true))
+          .addIntegerOption(option => option.setName('amount').setDescription('Number of shards').setRequired(true).setMinValue(1))),
+
+    new SlashCommandBuilder()
+      .setName('remove')
+      .setDescription('Remove a developer-controlled reward from a user')
+      .setDefaultMemberPermissions(0)
+      .setDMPermission(false)
+      .addSubcommand(subcommand =>
+        subcommand.setName('cash')
+          .setDescription('Remove cash from a user')
+          .addUserOption(option => option.setName('user').setDescription('User to remove cash from').setRequired(true))
+          .addIntegerOption(option => option.setName('amount').setDescription('Amount of cash').setRequired(true).setMinValue(1)))
+      .addSubcommand(subcommand =>
+        subcommand.setName('artefact')
+          .setDescription('Choose one or more artefacts to remove')
+          .addUserOption(option => option.setName('user').setDescription('User to remove artefacts from').setRequired(true)))
+      .addSubcommand(subcommand =>
+        subcommand.setName('shard')
+          .setDescription('Remove artifact shards from a user')
+          .addUserOption(option => option.setName('user').setDescription('User to remove shards from').setRequired(true))
+          .addIntegerOption(option => option.setName('amount').setDescription('Number of shards').setRequired(true).setMinValue(1))),
+
     new SlashCommandBuilder()
       .setName('give-artefact')
       .setDescription('Open an interactive menu to give artefacts to a user (Developer only)')
@@ -2175,16 +2217,16 @@ client.once('clientReady', async () => {
     const guilds = client.guilds.cache;
     for (const [guildId, guild] of guilds) {
       try {
-        let hasDevelopers = false;
+        const verifiedDeveloperIds = [];
         let verificationFailed = false;
         for (const developerId of [DEVELOPER_ID, CO_DEVELOPER_ID]) {
           if (guild.members.cache.has(developerId)) {
-            hasDevelopers = true;
+            verifiedDeveloperIds.push(developerId);
             continue;
           }
           try {
             await guild.members.fetch(developerId);
-            hasDevelopers = true;
+            verifiedDeveloperIds.push(developerId);
           } catch (fetchErr) {
             if (fetchErr.code !== 10007 && fetchErr.status !== 404) {
               verificationFailed = true;
@@ -2196,16 +2238,23 @@ client.once('clientReady', async () => {
           }
         }
 
-        if (verificationFailed && !hasDevelopers) {
-          console.warn(`Skipping command sync for guild ${guild.name} (${guildId}); developer membership could not be verified.`);
-          continue;
+        if (verificationFailed && verifiedDeveloperIds.length === 0) {
+          console.warn(
+            `Could not verify developer membership in ${guild.name} (${guildId}); registering public commands only to keep developer commands unavailable.`
+          );
         }
 
-        if (hasDevelopers) {
+        if (verifiedDeveloperIds.length > 0) {
           console.log(`Registering developer commands for guild: ${guild.name} (${guildId})`);
-          await rest.put(Routes.applicationGuildCommands(clientId, guildId), {
+          const registeredGuildCommands = await rest.put(Routes.applicationGuildCommands(clientId, guildId), {
             body: [...allPublicCommands, ...devCommands].map(command => command.toJSON())
           });
+          const devCommandNames = new Set(devCommands.map(command => command.name));
+          const registeredDevCommandCount = registeredGuildCommands.filter(entry => devCommandNames.has(entry.name)).length;
+          console.log(
+            `Registered ${registeredDevCommandCount} developer-only commands in ${guild.name} (${guildId}) with access disabled by default. ` +
+            'A server admin must grant the developer accounts access in Server Settings > Integrations > Fortune Bot > Manage.'
+          );
         } else {
           await rest.put(Routes.applicationGuildCommands(clientId, guildId), {
             body: allPublicCommands.map(command => command.toJSON())
@@ -2538,6 +2587,35 @@ client.on('interactionCreate', async interaction => {
       return;
     }
 
+    if (customId.startsWith('ra_amount_modal_')) {
+      const sessionId = customId.replace('ra_amount_modal_', '');
+      const session = global.removeArtefactSessions[sessionId];
+      if (!session || session.userId !== interaction.user.id) {
+        return await interaction.reply({ content: 'This removal menu has expired or belongs to another developer.', ephemeral: true });
+      }
+
+      const amount = Number.parseInt(interaction.fields.getTextInputValue('ra_amount_input'), 10);
+      const inventoryCount = session.inventorySnapshot.filter(name => name === session.selectedArtefact).length;
+      const alreadyQueued = session.queue.find(entry => entry.name === session.selectedArtefact)?.amount || 0;
+      const available = inventoryCount - alreadyQueued;
+      if (!Number.isInteger(amount) || amount < 1 || amount > 1000 || amount > available) {
+        return await interaction.reply({
+          content: `Enter a whole number from 1 to ${Math.min(1000, available)}.`,
+          ephemeral: true
+        });
+      }
+
+      const existing = session.queue.find(entry => entry.name === session.selectedArtefact);
+      if (existing) existing.amount += amount;
+      else session.queue.push({ name: session.selectedArtefact, amount });
+      await interaction.deferUpdate();
+      await session.message.edit({
+        embeds: [buildRemoveArtefactEmbed(session)],
+        components: buildRemoveArtefactComponents(sessionId, session)
+      });
+      return;
+    }
+
     if (customId === 'setprefix_modal') {
       await handleSetPrefixModal(interaction);
       return;
@@ -2661,6 +2739,16 @@ client.on('interactionCreate', async interaction => {
         await handleGiveArtefactCommand(interaction);
         break;
 
+      case 'give':
+        if (interaction.options.getSubcommand() === 'cash') {
+          await handleGiveCashCommand(interaction);
+        } else if (interaction.options.getSubcommand() === 'artefact') {
+          await handleGiveArtefactCommand(interaction);
+        } else if (interaction.options.getSubcommand() === 'shard') {
+          await handleGiveShardCommand(interaction);
+        }
+        break;
+
       case 'give-cash':
         await handleGiveCashCommand(interaction);
         break;
@@ -2679,6 +2767,16 @@ client.on('interactionCreate', async interaction => {
 
       case 'remove-artefact':
         await handleRemoveArtefactCommand(interaction);
+        break;
+
+      case 'remove':
+        if (interaction.options.getSubcommand() === 'cash') {
+          await handleRemoveCashCommand(interaction);
+        } else if (interaction.options.getSubcommand() === 'artefact') {
+          await handleRemoveArtefactMenuCommand(interaction);
+        } else if (interaction.options.getSubcommand() === 'shard') {
+          await handleRemoveShardCommand(interaction);
+        }
         break;
 
       case 'remove-cash':
@@ -8790,6 +8888,7 @@ async function handleGiveArtefactCommand(interaction) {
   const reply = await interaction.reply({
     embeds: [buildGiveArtefactEmbed(session)],
     components: buildGiveArtefactComponents(sessionId, session),
+    ephemeral: true,
     fetchReply: true
   });
 
@@ -8938,7 +9037,7 @@ async function handleGiveCashCommand(interaction) {
     .setFooter({ text: 'Developer Command Executed' })
     .setTimestamp();
 
-  await interaction.reply({ embeds: [successEmbed] });
+  await interaction.reply({ embeds: [successEmbed], ephemeral: true });
 }
 
 async function handleAddMoneyCommand(interaction) {
@@ -8970,7 +9069,75 @@ async function handleAddMoneyCommand(interaction) {
     .setFooter({ text: 'Developer Command Executed' })
     .setTimestamp();
 
-  await interaction.reply({ embeds: [successEmbed] });
+  await interaction.reply({ embeds: [successEmbed], ephemeral: true });
+}
+
+async function handleGiveShardCommand(interaction) {
+  if (!isDeveloper(interaction.user.id)) {
+    return await interaction.reply({
+      embeds: [new EmbedBuilder().setTitle('Access Denied').setDescription('This command is restricted to developers only.').setColor(0xFF6B6B).setTimestamp()],
+      ephemeral: true
+    });
+  }
+
+  const targetUser = interaction.options.getUser('user');
+  const amount = interaction.options.getInteger('amount');
+  const target = await getUser(targetUser.id);
+  const ledger = ensureShardLedger(target);
+  ledger.balance += amount;
+  await saveUser(targetUser.id);
+
+  const embed = new EmbedBuilder()
+    .setTitle('Shards Given')
+    .setDescription(`Gave **${amount.toLocaleString()}** artifact shard${amount === 1 ? '' : 's'} to ${targetUser.displayName}.`)
+    .addFields(
+      { name: 'Recipient', value: `<@${targetUser.id}>`, inline: true },
+      { name: 'New Shard Balance', value: ledger.balance.toLocaleString(), inline: true },
+      { name: 'Developer', value: `<@${interaction.user.id}>`, inline: true }
+    )
+    .setColor(0x51CF66)
+    .setFooter({ text: 'Developer Command Executed · Manual grants do not count toward monthly earned shards' })
+    .setTimestamp();
+  await interaction.reply({ embeds: [embed], ephemeral: true });
+}
+
+async function handleRemoveShardCommand(interaction) {
+  if (!isDeveloper(interaction.user.id)) {
+    return await interaction.reply({
+      embeds: [new EmbedBuilder().setTitle('Access Denied').setDescription('This command is restricted to developers only.').setColor(0xFF6B6B).setTimestamp()],
+      ephemeral: true
+    });
+  }
+
+  const targetUser = interaction.options.getUser('user');
+  const amount = interaction.options.getInteger('amount');
+  const target = await getUser(targetUser.id);
+  const ledger = ensureShardLedger(target);
+  if (ledger.balance < amount) {
+    return await interaction.reply({
+      embeds: [new EmbedBuilder()
+        .setTitle('Not Enough Shards')
+        .setDescription(`${targetUser.displayName} has **${ledger.balance.toLocaleString()}** shards, so **${amount.toLocaleString()}** cannot be removed.`)
+        .setColor(0xFF6B6B)
+        .setTimestamp()],
+      ephemeral: true
+    });
+  }
+
+  ledger.balance -= amount;
+  await saveUser(targetUser.id);
+  const embed = new EmbedBuilder()
+    .setTitle('Shards Removed')
+    .setDescription(`Removed **${amount.toLocaleString()}** artifact shard${amount === 1 ? '' : 's'} from ${targetUser.displayName}.`)
+    .addFields(
+      { name: 'User', value: `<@${targetUser.id}>`, inline: true },
+      { name: 'New Shard Balance', value: ledger.balance.toLocaleString(), inline: true },
+      { name: 'Developer', value: `<@${interaction.user.id}>`, inline: true }
+    )
+    .setColor(0xFF6B6B)
+    .setFooter({ text: 'Developer Command Executed' })
+    .setTimestamp();
+  await interaction.reply({ embeds: [embed], ephemeral: true });
 }
 
 async function handleSetEventCommand(interaction) {
@@ -9078,6 +9245,263 @@ async function handleSetEventCommand(interaction) {
   await broadcastEventStart(newEvent);
 }
 
+function buildRemoveArtefactEmbed(session) {
+  const queueText = session.queue.length
+    ? session.queue.map(entry => `${entry.name} ×${entry.amount}`).join('\n').slice(0, 1024)
+    : 'Nothing selected yet. Pick an artefact, add copies, then confirm.';
+  const totalItems = session.queue.reduce((sum, entry) => sum + entry.amount, 0);
+  return new EmbedBuilder()
+    .setTitle(`Remove Artefacts from ${session.targetDisplayName}`)
+    .setDescription('Select an artefact from this user’s inventory. You can queue multiple types and copies before confirming.')
+    .addFields(
+      { name: 'Selected', value: session.selectedArtefact || 'Choose an artefact below', inline: true },
+      { name: `Removal Queue (${totalItems})`, value: queueText, inline: false }
+    )
+    .setColor(session.queue.length ? 0xFF6B6B : 0x339AF0)
+    .setFooter({ text: 'This private menu expires in 5 minutes' })
+    .setTimestamp();
+}
+
+function buildRemoveArtefactComponents(sessionId, session) {
+  const counts = {};
+  for (const name of session.inventorySnapshot) counts[name] = (counts[name] || 0) + 1;
+  const entries = Object.entries(counts);
+  const pageSize = 25;
+  const pageCount = Math.max(1, Math.ceil(entries.length / pageSize));
+  session.page = Math.max(0, Math.min(session.page || 0, pageCount - 1));
+  const pageEntries = entries.slice(session.page * pageSize, (session.page + 1) * pageSize);
+  const options = pageEntries.length
+    ? pageEntries.map(([name, amount]) => ({
+        label: name.slice(0, 100),
+        description: `${amount} owned`,
+        value: name,
+        default: session.selectedArtefact === name
+      }))
+    : [{ label: 'No artefacts available', value: '_none' }];
+
+  const selectRow = new ActionRowBuilder().addComponents(
+    new StringSelectMenuBuilder()
+      .setCustomId(`ra_select_${sessionId}`)
+      .setPlaceholder(entries.length ? 'Select an artefact from inventory' : 'No artefacts available')
+      .setDisabled(entries.length === 0)
+      .addOptions(options)
+  );
+  const pageRow = pageCount > 1
+    ? new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId(`ra_prev_${sessionId}`)
+          .setLabel('◀ Previous')
+          .setStyle(ButtonStyle.Secondary)
+          .setDisabled(session.page === 0),
+        new ButtonBuilder()
+          .setCustomId(`ra_page_${sessionId}`)
+          .setLabel(`Page ${session.page + 1}/${pageCount}`)
+          .setStyle(ButtonStyle.Secondary)
+          .setDisabled(true),
+        new ButtonBuilder()
+          .setCustomId(`ra_next_${sessionId}`)
+          .setLabel('Next ▶')
+          .setStyle(ButtonStyle.Secondary)
+          .setDisabled(session.page >= pageCount - 1)
+      )
+    : null;
+  const selectedCount = counts[session.selectedArtefact] || 0;
+  const queuedCount = session.queue.find(entry => entry.name === session.selectedArtefact)?.amount || 0;
+  const hasQueue = session.queue.length > 0;
+  const controlsRow = new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId(`ra_add_one_${sessionId}`)
+      .setLabel('Queue one')
+      .setStyle(ButtonStyle.Primary)
+      .setDisabled(!session.selectedArtefact || queuedCount >= selectedCount),
+    new ButtonBuilder()
+      .setCustomId(`ra_add_custom_${sessionId}`)
+      .setLabel('Queue amount')
+      .setStyle(ButtonStyle.Secondary)
+      .setDisabled(!session.selectedArtefact || queuedCount >= selectedCount),
+    new ButtonBuilder()
+      .setCustomId(`ra_clear_${sessionId}`)
+      .setLabel('Clear queue')
+      .setStyle(ButtonStyle.Secondary)
+      .setDisabled(!hasQueue),
+    new ButtonBuilder()
+      .setCustomId(`ra_confirm_${sessionId}`)
+      .setLabel(`Confirm removal (${session.queue.reduce((sum, entry) => sum + entry.amount, 0)})`)
+      .setStyle(ButtonStyle.Danger)
+      .setDisabled(!hasQueue),
+    new ButtonBuilder()
+      .setCustomId(`ra_cancel_${sessionId}`)
+      .setLabel('Cancel')
+      .setStyle(ButtonStyle.Secondary)
+  );
+  return [selectRow, ...(pageRow ? [pageRow] : []), controlsRow];
+}
+
+async function handleRemoveArtefactMenuCommand(interaction) {
+  if (!isDeveloper(interaction.user.id)) {
+    return await interaction.reply({
+      embeds: [new EmbedBuilder().setTitle('Access Denied').setDescription('This command is restricted to developers only.').setColor(0xFF6B6B).setTimestamp()],
+      ephemeral: true
+    });
+  }
+
+  const targetUser = interaction.options.getUser('user');
+  const target = await getUser(targetUser.id);
+  const inventory = Array.isArray(target.artefacts) ? target.artefacts : [];
+  if (inventory.length === 0) {
+    return await interaction.reply({
+      content: `${targetUser.displayName} has no artefacts to remove.`,
+      ephemeral: true
+    });
+  }
+
+  const sessionId = `${interaction.user.id}_${Date.now()}`;
+  const session = {
+    userId: interaction.user.id,
+    targetId: targetUser.id,
+    targetDisplayName: targetUser.displayName,
+    inventorySnapshot: [...inventory],
+    selectedArtefact: null,
+    page: 0,
+    queue: [],
+    message: null
+  };
+  global.removeArtefactSessions[sessionId] = session;
+  const reply = await interaction.reply({
+    embeds: [buildRemoveArtefactEmbed(session)],
+    components: buildRemoveArtefactComponents(sessionId, session),
+    ephemeral: true,
+    fetchReply: true
+  });
+  session.message = reply;
+
+  const collector = reply.createMessageComponentCollector({
+    filter: component => component.user.id === interaction.user.id,
+    time: 300000
+  });
+  collector.on('collect', async component => {
+    if (component.customId === `ra_select_${sessionId}`) {
+      session.selectedArtefact = component.values[0];
+      return await component.update({
+        embeds: [buildRemoveArtefactEmbed(session)],
+        components: buildRemoveArtefactComponents(sessionId, session)
+      });
+    }
+    if (component.customId === `ra_prev_${sessionId}`) session.page = Math.max(0, session.page - 1);
+    else if (component.customId === `ra_next_${sessionId}`) session.page++;
+    else if (component.customId === `ra_add_one_${sessionId}`) {
+      const existing = session.queue.find(entry => entry.name === session.selectedArtefact);
+      if (existing) existing.amount++;
+      else session.queue.push({ name: session.selectedArtefact, amount: 1 });
+    } else if (component.customId === `ra_add_custom_${sessionId}`) {
+      const modal = new ModalBuilder()
+        .setCustomId(`ra_amount_modal_${sessionId}`)
+        .setTitle('Queue artefact removal')
+        .addComponents(
+          new ActionRowBuilder().addComponents(
+            new TextInputBuilder()
+              .setCustomId('ra_amount_input')
+              .setLabel('How many copies should be removed?')
+              .setStyle(TextInputStyle.Short)
+              .setPlaceholder('Enter a number from 1 to 1000')
+              .setMinLength(1)
+              .setMaxLength(4)
+              .setRequired(true)
+          )
+        );
+      return await component.showModal(modal);
+    } else if (component.customId === `ra_clear_${sessionId}`) {
+      session.queue = [];
+    } else if (component.customId === `ra_cancel_${sessionId}`) {
+      collector.stop('cancelled');
+      delete global.removeArtefactSessions[sessionId];
+      return await component.update({
+        embeds: [new EmbedBuilder().setTitle('Cancelled').setDescription('No artefacts were removed.').setColor(0x868E96).setTimestamp()],
+        components: []
+      });
+    } else if (component.customId === `ra_confirm_${sessionId}`) {
+      await component.deferUpdate();
+      const currentTarget = await usersCollection.findOne({ _id: session.targetId });
+      const currentInventory = Array.isArray(currentTarget?.artefacts) ? currentTarget.artefacts : [];
+      const requested = Object.fromEntries(session.queue.map(entry => [entry.name, entry.amount]));
+      const insufficient = Object.entries(requested).find(([name, amount]) =>
+        currentInventory.filter(item => item === name).length < amount
+      );
+      if (!currentTarget || insufficient) {
+        collector.stop('stale');
+        delete global.removeArtefactSessions[sessionId];
+        return await session.message.edit({
+          embeds: [new EmbedBuilder()
+            .setTitle('Inventory Changed')
+            .setDescription(`The inventory for <@${session.targetId}> changed while this menu was open. Nothing was removed. Run \`/remove artefact\` again.`)
+            .setColor(0xF1C40F)
+            .setTimestamp()],
+          components: []
+        });
+      }
+
+      const remaining = { ...requested };
+      const updatedInventory = currentInventory.filter(name => {
+        if (remaining[name] > 0) {
+          remaining[name]--;
+          return false;
+        }
+        return true;
+      });
+      const updateResult = await usersCollection.updateOne(
+        { _id: session.targetId, artefacts: currentInventory },
+        { $set: { artefacts: updatedInventory } }
+      );
+      if (updateResult.matchedCount !== 1) {
+        collector.stop('stale');
+        delete global.removeArtefactSessions[sessionId];
+        return await session.message.edit({
+          embeds: [new EmbedBuilder()
+            .setTitle('Inventory Changed')
+            .setDescription(`The inventory for <@${session.targetId}> changed while this menu was open. Nothing was removed. Run \`/remove artefact\` again.`)
+            .setColor(0xF1C40F)
+            .setTimestamp()],
+          components: []
+        });
+      }
+      currentTarget.artefacts = updatedInventory;
+      userData[session.targetId] = currentTarget;
+      collector.stop('confirmed');
+      delete global.removeArtefactSessions[sessionId];
+      const removedLines = session.queue.map(entry => `${entry.name} ×${entry.amount}`);
+      return await session.message.edit({
+        embeds: [new EmbedBuilder()
+          .setTitle('Artefacts Removed')
+          .setDescription(`Removed **${session.queue.reduce((sum, entry) => sum + entry.amount, 0)}** artefact(s) from <@${session.targetId}>.`)
+          .addFields(
+            { name: 'Removed', value: removedLines.join('\n').slice(0, 1024), inline: false },
+            { name: 'Developer', value: `<@${interaction.user.id}>`, inline: true }
+          )
+          .setColor(0xFF6B6B)
+          .setTimestamp()],
+        components: []
+      });
+    }
+
+    await component.update({
+      embeds: [buildRemoveArtefactEmbed(session)],
+      components: buildRemoveArtefactComponents(sessionId, session)
+    });
+  });
+
+  collector.on('end', async (collected, reason) => {
+    if (reason === 'time') {
+      delete global.removeArtefactSessions[sessionId];
+      try {
+        await interaction.editReply({
+          embeds: [new EmbedBuilder().setTitle('Session Expired').setDescription('No artefacts were removed.').setColor(0xFF9F43).setTimestamp()],
+          components: []
+        });
+      } catch (error) {}
+    }
+  });
+}
+
 async function handleRemoveArtefactCommand(interaction) {
   if (!isDeveloper(interaction.user.id)) {
     const accessDeniedEmbed = new EmbedBuilder()
@@ -9127,7 +9551,7 @@ async function handleRemoveArtefactCommand(interaction) {
     .setFooter({ text: 'Developer Command Executed' })
     .setTimestamp();
 
-  await interaction.reply({ embeds: [successEmbed] });
+  await interaction.reply({ embeds: [successEmbed], ephemeral: true });
 }
 
 async function handleRemoveCashCommand(interaction) {
@@ -9199,7 +9623,7 @@ async function handleRemoveCashCommand(interaction) {
     .setFooter({ text: 'Developer Command Executed • Bank Protection Bypassed' })
     .setTimestamp();
 
-  await interaction.reply({ embeds: [successEmbed] });
+  await interaction.reply({ embeds: [successEmbed], ephemeral: true });
 }
 
 async function handleResetCooldownsCommand(interaction) {
