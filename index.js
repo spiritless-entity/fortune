@@ -4205,7 +4205,7 @@ async function handleForgeCommand(interaction, userId) {
 
   if (entries.length === 0) {
     const allAtMaxStar = inventorySnapshot.length > 0 &&
-      inventorySnapshot.every(name => (getArtefactStarLevel(name) || 0) >= 9);
+      inventorySnapshot.every(name => getArtefactStarLevel(name) === 9);
     const description = inventorySnapshot.length === 0
       ? 'You do not own any artefacts yet. Find or trade for an artefact, then run `/forge` to upgrade it.'
       : allAtMaxStar
@@ -4437,6 +4437,8 @@ async function handleForgeCommand(interaction, userId) {
           .setColor(nextRarity.color)
           .setTimestamp()],
         components: []
+      }).catch(error => {
+        console.error(`Forge succeeded but the confirmation could not be displayed for user ${userId}:`, error);
       });
     } catch (error) {
       console.error(`Failed to process forge selection for user ${userId}:`, error);
