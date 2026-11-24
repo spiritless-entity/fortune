@@ -1951,6 +1951,11 @@ client.once('clientReady', async () => {
       .setDescription('View your daily quests and the server\'s weekly community quest'),
 
     new SlashCommandBuilder()
+      .setName('reset-weekly-quest')
+      .setDescription('Choose a new weekly community quest for this server (Developer only)')
+      .setDMPermission(false),
+
+    new SlashCommandBuilder()
       .setName('give-roles')
       .setDescription('Assign a role to a server member (Admin only)')
       .addUserOption(option =>
@@ -2094,12 +2099,6 @@ client.once('clientReady', async () => {
           .setDescription('Amount of cash to remove')
           .setRequired(true)
           .setMinValue(1)),
-
-    new SlashCommandBuilder()
-      .setName('reset-weekly-quest')
-      .setDescription('Choose a new weekly community quest for this server (Developer only)')
-      .setDefaultMemberPermissions(0)
-      .setDMPermission(false),
 
     new SlashCommandBuilder()
       .setName('reset-cooldowns')
